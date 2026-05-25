@@ -449,9 +449,12 @@ class OpenAIGPTConfig(BaseLLMModelInfo, BaseConfig):
             optional_params["tools"] = tools
 
         optional_params.pop("max_retries", None)
+        # Claude Code / Anthropic clients may send output_config; Azure OpenAI rejects it.
+        optional_params.pop("output_config", None)
         messages = self._maybe_inject_json_hint_for_glm(
             model=model, messages=messages, optional_params=optional_params
         )
+        messages = self._fill_deepseek_reasoning_content(model=model, messages=messages)
 
         return {
             "model": model,
@@ -543,6 +546,41 @@ class OpenAIGPTConfig(BaseLLMModelInfo, BaseConfig):
             "content": "Return valid JSON only.",
         }
         return [json_hint, *messages]
+
+    _DEEPSEEK_V4_MODELS = frozenset(
+        {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-reasoner"}
+    )
+
+    @classmethod
+    def _deepseek_requires_reasoning_passthrough(cls, model: str) -> bool:
+        slug = model.rsplit("/", 1)[-1].lower()
+        return slug in cls._DEEPSEEK_V4_MODELS
+
+    @classmethod
+    def _fill_deepseek_reasoning_content(
+        cls, *, model: str, messages: List[AllMessageValues]
+    ) -> List[AllMessageValues]:
+        if not cls._deepseek_requires_reasoning_passthrough(model):
+            return messages
+
+        filled: List[AllMessageValues] = []
+        for msg in messages:
+            if msg.get("role") != "assistant" or msg.get("reasoning_content"):
+                filled.append(msg)
+                continue
+
+            patched = dict(cast(dict, msg))
+            provider_fields = patched.get("provider_specific_fields") or {}
+            stored = provider_fields.get("reasoning_content")
+            if stored:
+                patched["reasoning_content"] = stored
+                cleaned = dict(provider_fields)
+                cleaned.pop("reasoning_content", None)
+                patched["provider_specific_fields"] = cleaned
+            else:
+                patched["reasoning_content"] = " "
+            filled.append(cast(AllMessageValues, patched))
+        return filled
 
     def _passed_in_tools(self, optional_params: dict) -> bool:
         return optional_params.get("tools", None) is not None

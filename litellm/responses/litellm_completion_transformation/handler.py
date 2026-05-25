@@ -65,6 +65,7 @@ class LiteLLMCompletionTransformationHandler:
         # Some custom OpenAI-compatible providers reject unknown kwargs before
         # making the HTTP call.
         completion_args.pop("client_metadata", None)
+        completion_args.pop("output_config", None)
 
         litellm_completion_response: Union[
             ModelResponse, litellm.CustomStreamWrapper
@@ -119,6 +120,7 @@ class LiteLLMCompletionTransformationHandler:
         # Some custom OpenAI-compatible providers reject unknown kwargs before
         # making the HTTP call.
         acompletion_args.pop("client_metadata", None)
+        acompletion_args.pop("output_config", None)
 
         litellm_completion_response: Union[
             ModelResponse, litellm.CustomStreamWrapper

@@ -4,18 +4,31 @@ Translates from OpenAI's `/v1/chat/completions` to DeepSeek's `/v1/chat/completi
 
 from typing import Any, Coroutine, List, Literal, Optional, Tuple, Union, cast, overload
 
-import litellm
 from litellm.litellm_core_utils.prompt_templates.common_utils import (
     handle_messages_with_content_list_to_str_conversion,
 )
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import AllMessageValues
-from litellm.utils import supports_reasoning
 
 from ...openai.chat.gpt_transformation import OpenAIGPTConfig
 
 
 class DeepSeekChatConfig(OpenAIGPTConfig):
+    _V4_THINKING_MODELS = frozenset(
+        {
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "deepseek-reasoner",
+        }
+    )
+
+    def _model_slug(self, model: str) -> str:
+        return model.rsplit("/", 1)[-1].lower()
+
+    def _requires_reasoning_passthrough(self, model: str) -> bool:
+        slug = self._model_slug(model)
+        return slug in self._V4_THINKING_MODELS
+
     def get_supported_openai_params(self, model: str) -> list:
         """
         DeepSeek reasoner models support thinking parameter.
@@ -62,48 +75,37 @@ class DeepSeekChatConfig(OpenAIGPTConfig):
         elif reasoning_effort is not None and reasoning_effort != "none":
             optional_params["thinking"] = {"type": "enabled"}
 
+        # DeepSeek V4 thinking models expect reasoning_content round-trip on multi-turn.
+        if self._requires_reasoning_passthrough(model):
+            optional_params.setdefault("thinking", {"type": "enabled"})
+
         return optional_params
 
     def _fill_reasoning_content(
         self, messages: List[AllMessageValues]
     ) -> List[AllMessageValues]:
         """
-        DeepSeek thinking mode requires `reasoning_content` to be passed back on
-        every assistant message in multi-turn conversations. If it is missing,
-        the API returns:
-          "The reasoning_content in the thinking mode must be passed back to the API."
-
-        For each assistant message that is missing `reasoning_content`:
-          1. Promote it from `provider_specific_fields["reasoning_content"]` if present
-             (LiteLLM stores provider-specific response fields there).
-          2. Otherwise inject a single space — the minimum value the API accepts.
+        DeepSeek V4 thinking mode requires `reasoning_content` on assistant messages
+        in multi-turn conversations. Clients often strip it; restore or inject a
+        placeholder so upstream validation passes.
         """
         result: List[AllMessageValues] = []
         for msg in messages:
-            if msg.get("role") == "assistant" and not msg.get("reasoning_content"):
-                patched = dict(cast(dict, msg))
-                provider_fields = patched.get("provider_specific_fields") or {}
-                stored = provider_fields.get("reasoning_content")
-                if stored:
-                    patched["reasoning_content"] = stored
-                    cleaned = dict(provider_fields)
-                    cleaned.pop("reasoning_content", None)
-                    patched["provider_specific_fields"] = cleaned
-                else:
-                    litellm.verbose_logger.warning(
-                        "DeepSeek thinking mode: assistant message is missing "
-                        "`reasoning_content` and none was saved in "
-                        "`provider_specific_fields`. A single-space placeholder "
-                        "is being injected to satisfy API validation, but the "
-                        "model will receive a blank reasoning chain for this turn, "
-                        "which may silently degrade multi-turn response quality. "
-                        "Preserve `reasoning_content` from the original assistant "
-                        "response when building multi-turn conversation history."
-                    )
-                    patched["reasoning_content"] = " "
-                result.append(cast(AllMessageValues, patched))
-            else:
+            if msg.get("role") != "assistant" or msg.get("reasoning_content"):
                 result.append(msg)
+                continue
+
+            patched = dict(cast(dict, msg))
+            provider_fields = patched.get("provider_specific_fields") or {}
+            stored = provider_fields.get("reasoning_content")
+            if stored:
+                patched["reasoning_content"] = stored
+                cleaned = dict(provider_fields)
+                cleaned.pop("reasoning_content", None)
+                patched["provider_specific_fields"] = cleaned
+            else:
+                patched["reasoning_content"] = " "
+            result.append(cast(AllMessageValues, patched))
         return result
 
     @overload
@@ -135,17 +137,6 @@ class DeepSeekChatConfig(OpenAIGPTConfig):
                 messages=messages, model=model, is_async=False
             )
 
-    def _thinking_mode_active(self, model: str, optional_params: dict) -> bool:
-        """
-        Returns True only when thinking mode is actually active for this request:
-          - model supports reasoning (capability check)
-          - user explicitly passed thinking={"type": "enabled"} (opt-in check)
-        """
-        return (
-            supports_reasoning(model=model, custom_llm_provider="deepseek")
-            and (optional_params.get("thinking") or {}).get("type") == "enabled"
-        )
-
     def transform_request(
         self,
         model: str,
@@ -154,16 +145,8 @@ class DeepSeekChatConfig(OpenAIGPTConfig):
         litellm_params: dict,
         headers: dict,
     ) -> dict:
-        """
-        Ensures `reasoning_content` is forwarded on assistant messages for
-        multi-turn thinking-mode conversations (issue #28045).
-
-        Only runs when thinking mode is actually active - guarded by both
-        supports_reasoning() (model capability) and optional_params["thinking"]
-        (user explicitly enabled it), preventing spurious injection on models
-        like deepseek-v3.2 that support thinking as opt-in but not always-on.
-        """
-        if self._thinking_mode_active(model=model, optional_params=optional_params):
+        if self._requires_reasoning_passthrough(model):
+            optional_params.setdefault("thinking", {"type": "enabled"})
             messages = self._fill_reasoning_content(messages)
         return super().transform_request(
             model=model,
@@ -181,11 +164,8 @@ class DeepSeekChatConfig(OpenAIGPTConfig):
         litellm_params: dict,
         headers: dict,
     ) -> dict:
-        """
-        Async equivalent of transform_request — applies the same reasoning_content
-        fix for multi-turn thinking-mode conversations.
-        """
-        if self._thinking_mode_active(model=model, optional_params=optional_params):
+        if self._requires_reasoning_passthrough(model):
+            optional_params.setdefault("thinking", {"type": "enabled"})
             messages = self._fill_reasoning_content(messages)
         return await super().async_transform_request(
             model=model,

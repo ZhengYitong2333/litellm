@@ -256,6 +256,7 @@ class AzureOpenAIConfig(BaseConfig):
         headers: dict,
     ) -> dict:
         messages = convert_to_azure_openai_messages(messages)
+        optional_params.pop("output_config", None)
         return {
             "model": model,
             "messages": messages,
