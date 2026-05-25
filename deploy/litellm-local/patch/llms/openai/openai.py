@@ -55,12 +55,6 @@ from ...types.llms.openai import *
 from ..base import BaseLLM
 from .chat.gpt_5_transformation import OpenAIGPT5Config
 from .chat.o_series_transformation import OpenAIOSeriesConfig
-from .chat.openai_compatible_request_utils import (
-    maybe_inject_json_keyword_hint_for_json_object,
-    messages_contain_json_keyword,
-    normalize_flat_function_tools,
-    response_format_is_json_object,
-)
 from .common_utils import (
     BaseOpenAILLM,
     OpenAIError,
@@ -273,44 +267,108 @@ class OpenAIConfig(BaseConfig):
         headers: dict,
     ) -> dict:
         messages = self._transform_messages(messages=messages, model=model)
-        tools = normalize_flat_function_tools(optional_params.get("tools"))
+        tools = self._normalize_flat_function_tools(optional_params.get("tools"))
         if tools is not None:
             optional_params = {**optional_params, "tools": tools}
-        messages = maybe_inject_json_keyword_hint_for_json_object(
-            model=model,
-            messages=messages,
-            optional_params=optional_params,
-            custom_llm_provider=litellm_params.get("custom_llm_provider"),
-            upstream_model=litellm_params.get("model"),
+        messages = self._maybe_inject_json_hint_for_glm(
+            model=model, messages=messages, optional_params=optional_params
         )
         return {"model": model, "messages": messages, **optional_params}
 
     def _normalize_flat_function_tools(self, tools: Optional[list]) -> Optional[list]:
-        return normalize_flat_function_tools(tools)
+        """
+        Normalize Responses/Codex flat function tools to OpenAI chat.completions shape.
+        """
+        if tools is None:
+            return None
+
+        normalized_tools = []
+        for tool in tools:
+            if not isinstance(tool, dict) or tool.get("type") != "function":
+                normalized_tools.append(tool)
+                continue
+
+            existing_function = tool.get("function")
+            if isinstance(existing_function, dict):
+                normalized_tools.append(tool)
+                continue
+
+            name = tool.get("name")
+            if name is None:
+                normalized_tools.append(tool)
+                continue
+
+            parameters = tool.get("parameters")
+            if not isinstance(parameters, dict):
+                parameters = {"type": "object"}
+            elif "type" not in parameters:
+                parameters = {**parameters, "type": "object"}
+
+            function_payload = {
+                "name": name,
+                "description": tool.get("description") or "",
+                "parameters": parameters,
+                "strict": bool(tool.get("strict", False)),
+            }
+            normalized_tools.append(
+                {
+                    **{
+                        key: value
+                        for key, value in tool.items()
+                        if key not in {"name", "description", "parameters", "strict"}
+                    },
+                    "type": "function",
+                    "function": function_payload,
+                }
+            )
+
+        return normalized_tools
 
     @staticmethod
     def _response_format_is_json_object(optional_params: dict) -> bool:
-        return response_format_is_json_object(optional_params)
+        response_format = optional_params.get("response_format")
+        return (
+            isinstance(response_format, dict)
+            and response_format.get("type") == "json_object"
+        )
 
     @staticmethod
     def _messages_contain_json_keyword(messages: List[AllMessageValues]) -> bool:
-        return messages_contain_json_keyword(messages)
+        def _contains_json(value: Any) -> bool:
+            if isinstance(value, str):
+                return "json" in value.lower()
+            if isinstance(value, list):
+                return any(_contains_json(v) for v in value)
+            if isinstance(value, dict):
+                return any(_contains_json(v) for v in value.values())
+            return False
 
-    def _maybe_inject_json_keyword_hint(
+        return any(_contains_json(message) for message in messages)
+
+    def _maybe_inject_json_hint_for_glm(
         self,
         model: str,
         messages: List[AllMessageValues],
         optional_params: dict,
-        custom_llm_provider: Optional[str] = None,
-        upstream_model: Optional[str] = None,
     ) -> List[AllMessageValues]:
-        return maybe_inject_json_keyword_hint_for_json_object(
-            model=model,
-            messages=messages,
-            optional_params=optional_params,
-            custom_llm_provider=custom_llm_provider,
-            upstream_model=upstream_model,
-        )
+        """
+        GLM-5.1 requires prompt text to include the word 'json' when using
+        response_format={"type":"json_object"}.
+        """
+        normalized_model = model.lower()
+        is_glm_5_1 = "glm-5.1" in normalized_model or "glm_5_1" in normalized_model
+        if not is_glm_5_1:
+            return messages
+        if not self._response_format_is_json_object(optional_params):
+            return messages
+        if self._messages_contain_json_keyword(messages):
+            return messages
+
+        json_hint: AllMessageValues = {
+            "role": "system",
+            "content": "Return valid JSON only.",
+        }
+        return [json_hint, *messages]
 
     def transform_response(
         self,

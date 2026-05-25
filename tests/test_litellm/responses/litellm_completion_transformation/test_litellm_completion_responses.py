@@ -2116,6 +2116,45 @@ class TestStreamingIDConsistency:
         assert len(tool_messages) == 1
         assert tool_messages[0]["tool_call_id"] == "call_missing_output"
 
+    def test_assistant_function_call_uses_empty_string_content(self):
+        input_items = [
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "shell",
+                "arguments": "{}",
+            }
+        ]
+
+        messages = (
+            LiteLLMCompletionResponsesConfig.transform_responses_api_input_to_messages(
+                input=input_items,
+                responses_api_request={},
+            )
+        )
+
+        assistant_messages = [m for m in messages if m.get("role") == "assistant"]
+        assert len(assistant_messages) == 1
+        assert assistant_messages[0]["content"] == ""
+        assert assistant_messages[0]["tool_calls"]
+
+    def test_empty_assistant_message_is_dropped(self):
+        input_items = [
+            {"type": "message", "role": "user", "content": "hi"},
+            {"type": "message", "role": "assistant", "content": ""},
+            {"type": "message", "role": "user", "content": "again"},
+        ]
+
+        messages = (
+            LiteLLMCompletionResponsesConfig.transform_responses_api_input_to_messages(
+                input=input_items,
+                responses_api_request={},
+            )
+        )
+
+        roles = [m.get("role") for m in messages]
+        assert roles.count("assistant") == 0
+
 
 class TestEnsureOutputItemContentPartAdded:
     """Test that _ensure_output_item_for_chunk emits content_part.added after

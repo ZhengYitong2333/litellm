@@ -6,8 +6,6 @@ SRC="$DIR/../../litellm"
 PATCH="$DIR/patch"
 
 PATHS=(
-  llms/openai/openai.py
-  llms/openai/chat/gpt_transformation.py
   llms/deepseek/chat/transformation.py
   llms/azure/chat/gpt_transformation.py
   llms/anthropic/experimental_pass_through/adapters/handler.py
@@ -16,6 +14,10 @@ PATHS=(
   responses/litellm_completion_transformation/transformation.py
 )
 
+# main-stable 镜像不含 openai_compatible_request_utils；以下文件保持仓库内兼容版本，勿从分支覆盖
+# llms/openai/openai.py
+# llms/openai/chat/gpt_transformation.py
+
 for rel in "${PATHS[@]}"; do
   dest="$PATCH/$rel"
   mkdir -p "$(dirname "$dest")"
@@ -23,3 +25,14 @@ for rel in "${PATHS[@]}"; do
 done
 
 echo "Synced patch from branch litellm/ -> $PATCH"
+
+# Optional live deploy directory (bind-mount target for running litellm-local container)
+LIVE_PATCH="${LITELLM_LOCAL_PATCH_DIR:-$HOME/litellm-local/patch}"
+if [[ -d "$(dirname "$LIVE_PATCH")" ]]; then
+  for rel in "${PATHS[@]}"; do
+    live_dest="$LIVE_PATCH/$rel"
+    mkdir -p "$(dirname "$live_dest")"
+    cp "$SRC/$rel" "$live_dest"
+  done
+  echo "Synced patch from branch litellm/ -> $LIVE_PATCH"
+fi

@@ -91,20 +91,34 @@ class DeepSeekChatConfig(OpenAIGPTConfig):
         """
         result: List[AllMessageValues] = []
         for msg in messages:
-            if msg.get("role") != "assistant" or msg.get("reasoning_content"):
+            if msg.get("role") != "assistant":
                 result.append(msg)
                 continue
 
             patched = dict(cast(dict, msg))
-            provider_fields = patched.get("provider_specific_fields") or {}
-            stored = provider_fields.get("reasoning_content")
-            if stored:
-                patched["reasoning_content"] = stored
-                cleaned = dict(provider_fields)
-                cleaned.pop("reasoning_content", None)
-                patched["provider_specific_fields"] = cleaned
-            else:
-                patched["reasoning_content"] = " "
+            content = patched.get("content")
+            tool_calls = patched.get("tool_calls")
+            has_content = (
+                content is not None
+                and content != ""
+                and content != []
+                and not (isinstance(content, str) and not str(content).strip())
+            )
+            has_tool_calls = bool(tool_calls)
+
+            if not has_content and not has_tool_calls:
+                patched["content"] = " "
+
+            if not patched.get("reasoning_content"):
+                provider_fields = patched.get("provider_specific_fields") or {}
+                stored = provider_fields.get("reasoning_content")
+                if stored:
+                    patched["reasoning_content"] = stored
+                    cleaned = dict(provider_fields)
+                    cleaned.pop("reasoning_content", None)
+                    patched["provider_specific_fields"] = cleaned
+                else:
+                    patched["reasoning_content"] = " "
             result.append(cast(AllMessageValues, patched))
         return result
 

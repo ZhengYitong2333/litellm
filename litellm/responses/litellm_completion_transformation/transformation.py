@@ -12,9 +12,17 @@ from typing_extensions import TypedDict
 
 from litellm.caching import InMemoryCache
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
-from litellm.llms.openai.chat.openai_compatible_request_utils import (
-    normalize_flat_function_tools,
-)
+
+try:
+    from litellm.llms.openai.chat.openai_compatible_request_utils import (
+        normalize_flat_function_tools,
+    )
+except ImportError:
+
+    def normalize_flat_function_tools(tools):  # type: ignore[no-redef]
+        return tools
+
+
 from litellm.responses.litellm_completion_transformation.session_handler import (
     ResponsesSessionHandler,
 )
@@ -309,7 +317,10 @@ class LiteLLMCompletionResponsesConfig:
         messages = LiteLLMCompletionResponsesConfig._ensure_tool_results_have_corresponding_tool_calls(
             messages=messages, tools=tools
         )
-        return LiteLLMCompletionResponsesConfig._ensure_assistant_tool_calls_have_tool_results(
+        messages = LiteLLMCompletionResponsesConfig._ensure_assistant_tool_calls_have_tool_results(
+            messages=messages
+        )
+        return LiteLLMCompletionResponsesConfig._ensure_assistant_messages_have_content_or_tool_calls(
             messages=messages
         )
 
@@ -1102,6 +1113,90 @@ class LiteLLMCompletionResponsesConfig:
         return fixed_messages
 
     @staticmethod
+    def _assistant_message_has_content(message: Any) -> bool:
+        """Return True when assistant content is non-empty for provider validation."""
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        if content is None:
+            return False
+        if isinstance(content, str):
+            return bool(content.strip())
+        if isinstance(content, list):
+            return len(content) > 0
+        return True
+
+    @staticmethod
+    def _get_valid_tool_calls_list(message: Any) -> List[Any]:
+        """Return tool_calls with non-empty ids."""
+        valid_tool_calls: List[Any] = []
+        for tool_call in LiteLLMCompletionResponsesConfig._get_tool_calls_list(message):
+            tool_call_id_raw = (
+                LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+                    tool_call, "id"
+                )
+            )
+            if tool_call_id_raw:
+                valid_tool_calls.append(tool_call)
+        return valid_tool_calls
+
+    @staticmethod
+    def _ensure_assistant_messages_have_content_or_tool_calls(
+        messages: Sequence[Any],
+    ) -> List[Any]:
+        """
+        DeepSeek and other OpenAI-compatible providers reject assistant messages
+        unless `content` or `tool_calls` is set. Codex/Responses history can produce
+        assistant turns with `content=None`, empty strings, or invalid tool_calls.
+        """
+        if not messages:
+            return list(messages)
+
+        import copy
+
+        fixed_messages: List[Any] = []
+        for message in list(copy.deepcopy(messages)):
+            role = (
+                message.get("role")
+                if isinstance(message, dict)
+                else getattr(message, "role", None)
+            )
+            if role != "assistant":
+                fixed_messages.append(message)
+                continue
+
+            valid_tool_calls = (
+                LiteLLMCompletionResponsesConfig._get_valid_tool_calls_list(message)
+            )
+            has_content = (
+                LiteLLMCompletionResponsesConfig._assistant_message_has_content(message)
+            )
+
+            if valid_tool_calls:
+                if isinstance(message, dict):
+                    message_dict = cast(Dict[str, Any], message)
+                    message_dict["tool_calls"] = valid_tool_calls
+                    if message_dict.get("content") is None:
+                        message_dict["content"] = ""
+                else:
+                    message.tool_calls = valid_tool_calls
+                    if getattr(message, "content", None) is None:
+                        message.content = ""
+                fixed_messages.append(message)
+                continue
+
+            if has_content:
+                fixed_messages.append(message)
+                continue
+
+            # Drop assistant messages with neither usable content nor tool_calls.
+            continue
+
+        return fixed_messages
+
+    @staticmethod
     def _transform_responses_api_input_item_to_chat_completion_message(
         input_item: Any,
     ) -> List[
@@ -1359,7 +1454,7 @@ class LiteLLMCompletionResponsesConfig:
         chat_completion_response_message = ChatCompletionResponseMessage(
             tool_calls=[tool_call],
             role="assistant",
-            content=None,  # Function calls don't have content
+            content="",  # DeepSeek requires content or tool_calls; empty string is valid
         )
 
         return [chat_completion_response_message]
