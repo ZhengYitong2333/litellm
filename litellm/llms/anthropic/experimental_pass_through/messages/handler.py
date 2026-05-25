@@ -13,7 +13,7 @@ from typing import Any, AsyncIterator, Coroutine, Dict, List, Optional, Union, c
 import litellm
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.llms.anthropic.common_utils import (
-    strip_empty_text_blocks_from_anthropic_messages,
+    sanitize_anthropic_messages_for_upstream,
 )
 from litellm.llms.base_llm.anthropic_messages.transformation import (
     BaseAnthropicMessagesConfig,
@@ -203,7 +203,9 @@ async def anthropic_messages(
     # causes the next /v1/messages call to 400.  /v1/chat/completions
     # already handles this in anthropic_messages_pt; sanitize the native
     # Anthropic Messages path here for the same guarantee.  See #22930.
-    messages = strip_empty_text_blocks_from_anthropic_messages(messages)
+    messages = sanitize_anthropic_messages_for_upstream(
+        messages=messages, api_base=api_base
+    )
 
     original_stream = stream or kwargs.get(
         "_websearch_interception_converted_stream", False
@@ -293,6 +295,12 @@ async def anthropic_messages(
         api_base=api_base,
         client=client,
         custom_llm_provider=custom_llm_provider,
+        # messages were already empty-text-block sanitized at the top of this
+        # function and are NOT reassigned before this dispatch, so the handler
+        # can skip its (otherwise redundant) second full-messages scan. Passed
+        # explicitly (not via **kwargs) so it only affects this direct
+        # dispatch -- interceptor / sync entry points still sanitize.
+        _litellm_messages_presanitized=True,
         **kwargs,
     )
     ctx = contextvars.copy_context()
@@ -351,10 +359,16 @@ def anthropic_messages_handler(
     """
     from litellm.types.utils import LlmProviders
 
-    # Sanitize empty text blocks here too so the sync entry point
+    # Sanitize empty text blocks so the sync entry point
     # (litellm.messages.create -> anthropic_messages_handler) gets the same
-    # protection as the async wrapper.  Idempotent when called twice.
-    messages = strip_empty_text_blocks_from_anthropic_messages(messages)
+    # protection as the async wrapper. The async wrapper already sanitized and
+    # does not reassign messages before dispatch, so it sets
+    # ``_litellm_messages_presanitized`` to skip this redundant second
+    # full-messages scan. Pop it so it never leaks into provider params.
+    if not kwargs.pop("_litellm_messages_presanitized", False):
+        messages = sanitize_anthropic_messages_for_upstream(
+            messages=messages, api_base=api_base
+        )
 
     metadata = validate_anthropic_api_metadata(metadata)
 

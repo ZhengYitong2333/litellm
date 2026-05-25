@@ -294,3 +294,159 @@ def test_streaming_chunk_id_raw():
     # Streaming chunk IDs should be raw (like OpenAI's msg_xxx format)
     assert result.item_id == "chunk-123"  # Should be raw, not encoded
     assert not result.item_id.startswith("resp_")  # Should NOT have resp_ prefix
+
+
+class TestStreamingIteratorNextPath:
+    """Cover __next__ path that enqueues transform output via pending events."""
+
+    def test_next_returns_text_delta_after_initial_output_item_events(self):
+        from unittest.mock import Mock
+
+        from litellm.responses.litellm_completion_transformation.streaming_iterator import (
+            LiteLLMCompletionStreamingIterator,
+        )
+        from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
+
+        mock_stream_wrapper = Mock()
+        mock_logging_obj = Mock()
+        mock_stream_wrapper.logging_obj = mock_logging_obj
+
+        chunk1 = ModelResponseStream(
+            id="chatcmpl-first-id",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion.chunk",
+            choices=[
+                StreamingChoices(
+                    index=0,
+                    delta=Delta(content="Hello", role="assistant"),
+                    finish_reason=None,
+                )
+            ],
+        )
+        chunk2 = ModelResponseStream(
+            id="chatcmpl-second-id",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion.chunk",
+            choices=[
+                StreamingChoices(
+                    index=0,
+                    delta=Delta(content=" World", role=None),
+                    finish_reason=None,
+                )
+            ],
+        )
+        mock_stream_wrapper.__iter__ = Mock(return_value=mock_stream_wrapper)
+        mock_stream_wrapper.__next__ = Mock(side_effect=[chunk1, chunk2, StopIteration])
+
+        iterator = LiteLLMCompletionStreamingIterator(
+            model="test-model",
+            litellm_custom_stream_wrapper=mock_stream_wrapper,
+            request_input="Say Hello World",
+            responses_api_request={},
+        )
+        iterator.sent_response_created_event = True
+        iterator.sent_response_in_progress_event = True
+
+        events = []
+        for _ in range(6):
+            try:
+                events.append(next(iterator))
+            except StopIteration:
+                break
+
+        text_deltas = [
+            event
+            for event in events
+            if getattr(event, "type", None) == "response.output_text.delta"
+        ]
+        assert len(text_deltas) >= 1
+        assert text_deltas[0].item_id == "chatcmpl-first-id"
+        assert any(delta.delta == " World" for delta in text_deltas)
+
+
+class TestReasoningToMessageStreamingBridge:
+    """Cover reasoning item id reuse and message item emission after reasoning."""
+
+    def _make_iterator(self):
+        from unittest.mock import AsyncMock
+
+        return LiteLLMCompletionStreamingIterator(
+            model="test-model",
+            litellm_custom_stream_wrapper=AsyncMock(),
+            request_input="Test input",
+            responses_api_request={},
+        )
+
+    def test_reasoning_item_id_is_reused_from_cached_id(self):
+        iterator = self._make_iterator()
+        iterator._cached_reasoning_item_id = "rs_fixed"
+
+        chunk = ModelResponseStream(
+            id="test-id",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion.chunk",
+            choices=[
+                StreamingChoices(
+                    finish_reason=None,
+                    index=0,
+                    delta=Delta(
+                        content="",
+                        role="assistant",
+                        reasoning_content="thinking step 1",
+                    ),
+                )
+            ],
+        )
+
+        event = iterator._transform_chat_completion_chunk_to_response_api_chunk(chunk)
+        assert event.item_id == "rs_fixed"
+
+    def test_text_delta_after_reasoning_queues_output_item_added(self):
+        iterator = self._make_iterator()
+        iterator.sent_content_part_added_event = False
+        iterator._message_item_added_after_reasoning = False
+
+        chunk = ModelResponseStream(
+            id="test-id",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion.chunk",
+            choices=[
+                StreamingChoices(
+                    finish_reason=None,
+                    index=0,
+                    delta=Delta(content="Hello", role="assistant"),
+                )
+            ],
+        )
+
+        event = iterator._transform_chat_completion_chunk_to_response_api_chunk(chunk)
+        assert event.delta == "Hello"
+        assert len(iterator._pending_response_events) >= 1
+        assert iterator._message_item_added_after_reasoning is True
+
+    def test_return_default_done_events_skips_empty_message_without_stream(self):
+        iterator = self._make_iterator()
+        iterator.sent_content_part_added_event = False
+        iterator._cached_item_id = None
+
+        response = ModelResponse(
+            id="test-id",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion",
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(content="", role="assistant"),
+                )
+            ],
+        )
+
+        result = iterator.return_default_done_events(response)
+        assert result is None
+        assert iterator.sent_output_item_done_event is True

@@ -147,6 +147,7 @@ class ProviderSpecificModelInfo(TypedDict, total=False):
     supports_low_reasoning_effort: Optional[bool]
     supports_xhigh_reasoning_effort: Optional[bool]
     supports_max_reasoning_effort: Optional[bool]
+    supports_output_config: Optional[bool]
 
 
 class SearchContextCostPerQuery(TypedDict, total=False):
@@ -243,6 +244,7 @@ class ModelInfoBase(ProviderSpecificModelInfo, total=False):
         float
     ]  # video_generation tier: key output_cost_per_second_<resolution> (e.g. 1080p, 720p)
     ocr_cost_per_page: Optional[float]  # for OCR models
+    ocr_cost_per_credit: Optional[float]  # for OCR models priced by credit
     annotation_cost_per_page: Optional[float]  # for OCR models
     search_context_cost_per_query: Optional[
         SearchContextCostPerQuery
@@ -260,6 +262,7 @@ class ModelInfoBase(ProviderSpecificModelInfo, total=False):
             "chat",
             "audio_transcription",
             "responses",
+            "ocr",
         ]
     ]
     tpm: Optional[int]
@@ -1529,6 +1532,20 @@ class ServerToolUse(BaseModel):
     tool_search_requests: Optional[int] = None
 
 
+def get_usage_web_search_requests(usage: Optional["Usage"]) -> Optional[int]:
+    """Read web_search_requests from Usage.server_tool_use (dict or model)."""
+    if usage is None:
+        return None
+    server_tool_use = getattr(usage, "server_tool_use", None)
+    if server_tool_use is None:
+        return None
+    if isinstance(server_tool_use, dict):
+        value = server_tool_use.get("web_search_requests")
+    else:
+        value = getattr(server_tool_use, "web_search_requests", None)
+    return value if isinstance(value, int) else None
+
+
 class Usage(SafeAttributeModel, CompletionUsage):
     _cache_creation_input_tokens: int = PrivateAttr(
         0
@@ -1660,7 +1677,10 @@ class Usage(SafeAttributeModel, CompletionUsage):
         )
 
         if server_tool_use is not None:
-            self.server_tool_use = server_tool_use
+            if isinstance(server_tool_use, dict):
+                self.server_tool_use = ServerToolUse(**server_tool_use)
+            else:
+                self.server_tool_use = server_tool_use
         else:  # maintain openai compatibility in usage object if possible
             del self.server_tool_use
 
@@ -2765,6 +2785,20 @@ class StandardLoggingGuardrailInformation(TypedDict, total=False):
     risk_score: Optional[float]
     """Risk score 0-10 indicating how risky the request was (higher = riskier). Computed by the guardrail provider."""
 
+    violation_categories: Optional[List[str]]
+    """Names of the policy items that intervened on this request (e.g. Bedrock
+    topic-policy topic names, content-policy filter types, PII entity types).
+    Populated by the provider hook before redaction so downstream loggers
+    (OTEL, Langfuse, ...) can filter by violation category without parsing
+    the raw guardrail_response blob. Empty/absent when the guardrail allowed
+    the request through."""
+
+    guardrail_action: Optional[str]
+    """Provider's raw top-level action string (e.g. Bedrock's ``GUARDRAIL_INTERVENED``
+    or ``NONE``). Populated by the provider hook so the OTEL integration can
+    surface it as a queryable span attribute without parsing the raw
+    guardrail_response blob."""
+
 
 class EvalVerdict(TypedDict, total=False):
     criterion_name: str
@@ -2806,6 +2840,8 @@ class GuardrailTracingDetail(TypedDict, total=False):
     patterns_checked: Optional[int]
     alert_recipients: Optional[List[str]]
     risk_score: Optional[float]
+    violation_categories: Optional[List[str]]
+    guardrail_action: Optional[str]
 
 
 StandardLoggingPayloadStatus = Literal["success", "failure"]
@@ -3219,6 +3255,7 @@ class LlmProviders(str, Enum):
     ANTHROPIC_TEXT = "anthropic_text"
     BYTEZ = "bytez"
     REPLICATE = "replicate"
+    REDUCTO = "reducto"
     RUNWAYML = "runwayml"
     AWS_POLLY = "aws_polly"
     HUGGINGFACE = "huggingface"

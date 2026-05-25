@@ -14,6 +14,7 @@ from typing import (
     cast,
 )
 
+from litellm.llms.anthropic.common_utils import _is_valid_redacted_thinking_data
 from litellm.llms.anthropic.experimental_pass_through.utils import (
     is_reasoning_auto_summary_enabled,
 )
@@ -624,6 +625,9 @@ class LiteLLMAnthropicMessagesAdapter:
                                 )
                                 thinking_blocks.append(thinking_block)
                             elif content.get("type") == "redacted_thinking":
+                                data = content.get("data")
+                                if not _is_valid_redacted_thinking_data(data):
+                                    continue
                                 redacted_thinking_block = (
                                     ChatCompletionRedactedThinkingBlock(
                                         type="redacted_thinking",
@@ -1107,7 +1111,31 @@ class LiteLLMAnthropicMessagesAdapter:
             output_format=output_format
         )
         if response_format:
+            model = anthropic_message_request.get("model") or new_kwargs.get("model")
+            response_format = self._maybe_downgrade_json_schema_response_format(
+                model=str(model or ""),
+                response_format=response_format,
+                custom_llm_provider=new_kwargs.get("custom_llm_provider"),
+            )
             new_kwargs["response_format"] = response_format
+
+    @staticmethod
+    def _maybe_downgrade_json_schema_response_format(
+        model: str,
+        response_format: Dict[str, Any],
+        custom_llm_provider: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Downgrade json_schema to json_object when the target model lacks schema support."""
+        if response_format.get("type") != "json_schema":
+            return response_format
+
+        from litellm.utils import supports_response_schema
+
+        if supports_response_schema(
+            model=model, custom_llm_provider=custom_llm_provider
+        ):
+            return response_format
+        return {"type": "json_object"}
 
     def _copy_untranslated_anthropic_params(
         self,
@@ -1476,7 +1504,7 @@ class LiteLLMAnthropicMessagesAdapter:
         for choice in choices:
             if choice.delta.content is not None and len(choice.delta.content) > 0:
                 text += choice.delta.content
-            if choice.delta.tool_calls is not None:
+            if choice.delta.tool_calls:
                 partial_json = ""
                 for tool in choice.delta.tool_calls:
                     if (
@@ -1531,6 +1559,15 @@ class LiteLLMAnthropicMessagesAdapter:
         self, response: ModelResponse, current_content_block_index: int
     ) -> Union[ContentBlockDelta, MessageBlockDelta]:
         ## base case - final chunk w/ finish reason
+        if not response.choices:
+            from litellm.types.llms.anthropic import ContentTextBlockDelta
+
+            return ContentBlockDelta(
+                type="content_block_delta",
+                index=current_content_block_index,
+                delta=ContentTextBlockDelta(type="text_delta", text=""),
+            )
+
         if response.choices[0].finish_reason is not None:
             delta = MessageDelta(
                 stop_reason=self._translate_openai_finish_reason_to_anthropic(
