@@ -12,6 +12,9 @@ from typing_extensions import TypedDict
 
 from litellm.caching import InMemoryCache
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+from litellm.llms.openai.chat.openai_compatible_request_utils import (
+    normalize_flat_function_tools,
+)
 from litellm.responses.litellm_completion_transformation.session_handler import (
     ResponsesSessionHandler,
 )
@@ -982,10 +985,6 @@ class LiteLLMCompletionResponsesConfig:
             return LiteLLMCompletionResponsesConfig._transform_responses_api_function_call_to_chat_completion_message(
                 function_call=input_item
             )
-        elif LiteLLMCompletionResponsesConfig._is_input_item_reasoning(input_item):
-            return LiteLLMCompletionResponsesConfig._transform_responses_api_reasoning_item_to_chat_completion_message(
-                reasoning_item=input_item
-            )
         else:
             content = input_item.get("content")
             # Handle None content: Responses API allows None content, but GenericChatCompletionMessage requires content
@@ -1019,44 +1018,6 @@ class LiteLLMCompletionResponsesConfig:
         Check if the input item is a function call
         """
         return input_item.get("type") == "function_call"
-
-    @staticmethod
-    def _is_input_item_reasoning(input_item: Any) -> bool:
-        return input_item.get("type") == "reasoning"
-
-    @staticmethod
-    def _transform_responses_api_reasoning_item_to_chat_completion_message(
-        reasoning_item: Dict[str, Any],
-    ) -> List[
-        Union[
-            AllMessageValues,
-            GenericChatCompletionMessage,
-            ChatCompletionResponseMessage,
-        ]
-    ]:
-        reasoning_text = ""
-        for part in reasoning_item.get("summary") or []:
-            if isinstance(part, dict) and part.get("type") in (
-                "summary_text",
-                "output_text",
-            ):
-                reasoning_text += part.get("text", "")
-        if not reasoning_text:
-            for part in reasoning_item.get("content") or []:
-                if isinstance(part, dict):
-                    reasoning_text += part.get("text", "") or ""
-        if not reasoning_text:
-            return []
-        return [
-            cast(
-                AllMessageValues,
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "reasoning_content": reasoning_text,
-                },
-            )
-        ]
 
     @staticmethod
     def _transform_responses_api_tool_call_output_to_chat_completion_message(
@@ -1454,11 +1415,22 @@ class LiteLLMCompletionResponsesConfig:
                 chat_completion_tools.append(
                     cast(ChatCompletionToolParam, chat_completion_tool)
                 )
-            else:
-                # Responses built-in tools (e.g. shell/computer_use_preview) are not
-                # valid Chat Completions tools. Dropping them prevents OpenAI-compatible
-                # providers from rejecting the whole request while preserving function tools.
+            elif tool.get("type") in {
+                "shell",
+                "computer_use_preview",
+                "namespace",
+            }:
+                # Codex/Responses built-in tools that are not valid Chat Completions tools.
+                # Dropping them prevents OpenAI-compatible providers from rejecting the
+                # whole request while preserving function tools.
                 continue
+            else:
+                chat_completion_tools.append(
+                    cast(Union[ChatCompletionToolParam, OpenAIMcpServerTool], tool)
+                )
+        chat_completion_tools = (
+            normalize_flat_function_tools(chat_completion_tools) or []
+        )
         return chat_completion_tools, web_search_options
 
     @staticmethod
@@ -1859,15 +1831,11 @@ class LiteLLMCompletionResponsesConfig:
             if hasattr(choice, "message") and choice.message:
                 message = choice.message
                 if hasattr(message, "reasoning_content") and message.reasoning_content:
-                    reasoning_id = "rs_reasoning"
-                    provider_fields = getattr(message, "provider_specific_fields", None)
-                    if isinstance(provider_fields, dict):
-                        reasoning_id = provider_fields.get("reasoning_item_id", reasoning_id)
                     # Only check the first choice for reasoning content
                     return [
                         GenericResponseOutputItem(
                             type="reasoning",
-                            id=reasoning_id,
+                            id=f"rs_{hash(str(message.reasoning_content))}",
                             status=LiteLLMCompletionResponsesConfig._map_chat_completion_finish_reason_to_responses_status(
                                 choice.finish_reason
                             ),

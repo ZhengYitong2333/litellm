@@ -26,7 +26,6 @@ def test_model(model: str) -> dict:
             "model": model,
             "messages": [{"role": "user", "content": PROMPT}],
             "max_tokens": 16,
-            "temperature": 0,
         }
     ).encode()
     req = urllib.request.Request(
