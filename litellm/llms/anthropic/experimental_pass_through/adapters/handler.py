@@ -126,9 +126,13 @@ class LiteLLMMessagesToCompletionTransformationHandler:
         Handles both string ("max") and dict ({"effort": "max", "summary": ...})
         formats. Uses model registry to check supports_xhigh/supports_minimal.
         """
-        from litellm.llms.anthropic.experimental_pass_through.utils import (
-            normalize_reasoning_effort_value,
-        )
+        try:
+            from litellm.llms.anthropic.experimental_pass_through.utils import (
+                normalize_reasoning_effort_value,
+            )
+        except ImportError:
+            # main-stable may not ship normalize_reasoning_effort_value yet.
+            return
 
         reasoning_effort = completion_kwargs.get("reasoning_effort")
         if reasoning_effort is None:
