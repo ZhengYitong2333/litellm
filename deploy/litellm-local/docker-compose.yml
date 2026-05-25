@@ -1,0 +1,43 @@
+# LiteLLM 本机代理：官方 main-stable 镜像 + bind-mount 补丁
+# 用法见 README.md
+services:
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-stable
+    container_name: litellm-local
+    ports:
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - ${LITELLM_CONFIG_PATH:-./config.yaml}:/app/config.yaml:ro
+      - ./patch/llms/openai/openai.py:/app/litellm/llms/openai/openai.py:ro
+      - ./patch/llms/openai/chat/gpt_transformation.py:/app/litellm/llms/openai/chat/gpt_transformation.py:ro
+      - ./patch/llms/deepseek/chat/transformation.py:/app/litellm/llms/deepseek/chat/transformation.py:ro
+      - ./patch/llms/azure/chat/gpt_transformation.py:/app/litellm/llms/azure/chat/gpt_transformation.py:ro
+      - ./patch/llms/anthropic/experimental_pass_through/adapters/handler.py:/app/litellm/llms/anthropic/experimental_pass_through/adapters/handler.py:ro
+      - ./patch/responses/main.py:/app/litellm/responses/main.py:ro
+      - ./patch/responses/litellm_completion_transformation/handler.py:/app/litellm/responses/litellm_completion_transformation/handler.py:ro
+      - ./patch/responses/litellm_completion_transformation/transformation.py:/app/litellm/responses/litellm_completion_transformation/transformation.py:ro
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app
+      LITELLM_USE_CHAT_COMPLETIONS_URL_FOR_ANTHROPIC_MESSAGES: "true"
+    command:
+      - "--config"
+      - "/app/config.yaml"
+      - "--port"
+      - "4000"
+    networks:
+      - litellm-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+networks:
+  litellm-net:
+    external: true
