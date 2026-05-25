@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Quick functionality + latency check for all proxy models."""
+
 import json
 import os
 import time
@@ -16,6 +17,8 @@ MODELS = [
     "sophnet-claude-opus-4-7",
     "azure-gpt-5.5",
     "azure-gpt-5.4",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
 ]
 PROMPT = "Reply with exactly one word: OK"
 

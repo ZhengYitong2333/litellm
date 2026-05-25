@@ -1211,7 +1211,7 @@ class TestToolTransformation:
         assert result_tools[0]["type"] == "code_execution_20250825"
 
     def test_transform_tool_search_tools(self):
-        """Test that tool_search tools are passed through as-is"""
+        """Codex tool_search tools are dropped for OpenAI-compatible chat providers."""
         tool_search_regex = {
             "name": "tool_search_tool_regex",
             "description": "Search tools using regex",
@@ -1222,7 +1222,12 @@ class TestToolTransformation:
             "description": "Search tools using BM25",
         }
 
-        tools = [tool_search_regex, tool_search_bm25]
+        codex_tool_search = {
+            "type": "tool_search",
+            "name": "tool_search",
+        }
+
+        tools = [tool_search_regex, tool_search_bm25, codex_tool_search]
 
         # Execute
         (
@@ -1233,9 +1238,7 @@ class TestToolTransformation:
         )
 
         # Assert
-        assert len(result_tools) == 2
-        assert result_tools[0]["name"] == "tool_search_tool_regex"
-        assert result_tools[1]["name"] == "tool_search_tool_bm25"
+        assert len(result_tools) == 0
 
     def test_transform_mixed_tools_list(self):
         """Test transforming a mixed list of different tool types"""
@@ -2085,6 +2088,33 @@ class TestStreamingIDConsistency:
             else getattr(assistant_messages[0], "tool_calls", None)
         )
         assert tool_calls is not None and len(tool_calls) == 1
+
+    def test_function_call_without_output_gets_placeholder_tool_message(self):
+        """
+        Codex/Responses history can include function_call items without matching
+        function_call_output (e.g. dropped shell/tool_search outputs). DeepSeek
+        rejects assistant tool_calls without following tool messages.
+        """
+        input_items = [
+            {"type": "message", "role": "user", "content": "Run a command"},
+            {
+                "type": "function_call",
+                "call_id": "call_missing_output",
+                "name": "shell",
+                "arguments": '{"command": ["echo", "hi"]}',
+            },
+        ]
+
+        messages = (
+            LiteLLMCompletionResponsesConfig.transform_responses_api_input_to_messages(
+                input=input_items,
+                responses_api_request={},
+            )
+        )
+
+        tool_messages = [m for m in messages if m.get("role") == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0]["tool_call_id"] == "call_missing_output"
 
 
 class TestEnsureOutputItemContentPartAdded:

@@ -12,7 +12,6 @@ from litellm.responses.litellm_completion_transformation.transformation import (
 )
 from litellm.types.utils import ModelResponse
 
-
 sys.path.insert(0, os.path.abspath("../.."))
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
@@ -188,6 +187,7 @@ def test_responses_to_chat_drops_unsupported_builtin_tools():
                     "display_height": 768,
                     "environment": "mac",
                 },
+                {"type": "tool_search", "name": "tool_search"},
             ]
         )
     )
