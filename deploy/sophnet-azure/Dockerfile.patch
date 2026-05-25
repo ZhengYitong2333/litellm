@@ -1,0 +1,5 @@
+FROM ghcr.io/berriai/litellm:main-stable
+
+# Local litellm/ is bind-mounted at runtime (see docker-compose.yml).
+# PYTHONPATH makes the mount override the pip-installed package.
+ENV PYTHONPATH=/app

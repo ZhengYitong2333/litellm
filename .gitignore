@@ -83,6 +83,10 @@ litellm/proxy/migrations/*config.yaml
 litellm/proxy/migrations/*
 litellm/proxy/to_delete_loadtest_work/*
 config.yaml
+deploy/sophnet-azure/config.yaml
+deploy/sophnet-azure/.env
+deploy/sophnet-azure/.env.example
+.local/
 tests/litellm/litellm_core_utils/llm_cost_calc/log.txt
 tests/test_custom_dir/*
 test.py
@@ -101,6 +105,7 @@ STABILIZATION_TODO.md
 **/*.storageState.json
 **/coverage
 test-config
+.vscode
 
 # Local personal deployment stacks (not for upstream PR)
 deploy/sophnet-azure/
@@ -128,4 +133,3 @@ crash.log
 crash.*.log
 # .terraform.lock.hcl is intentionally NOT ignored — it pins provider versions
 # and should be committed.
-.vscode
