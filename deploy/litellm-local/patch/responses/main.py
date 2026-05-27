@@ -975,7 +975,18 @@ def responses(
             use_chat_completions_api or _from_chat_completions_prefix
         )
         _api_base = str(litellm_params.api_base or kwargs.get("api_base") or "").lower()
-        if any(host in _api_base for host in ("sophnet.com", "minimaxi.com")):
+        # Codex /v1/responses: route through chat-completions bridge for providers
+        # whose native Responses API rejects Codex payloads (Sophnet, MiniMax, Azure).
+        if any(
+            host in _api_base
+            for host in (
+                "sophnet.com",
+                "minimaxi.com",
+                "ai.azure.com",
+                "openai.azure.com",
+                "services.ai.azure.com",
+            )
+        ):
             use_chat_completions_api = True
 
         model, custom_llm_provider = _resolve_model_provider_for_responses(

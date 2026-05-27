@@ -21,6 +21,27 @@ from litellm.types.utils import ModelResponse
 
 
 class LiteLLMCompletionTransformationHandler:
+    @staticmethod
+    def _drop_azure_reasoning_effort_when_tools_present(
+        completion_args: Dict[str, Any],
+    ) -> None:
+        """
+        Azure chat-completions can hang when tool calling and reasoning_effort
+        are sent together through the Responses bridge. Keep tools working by
+        omitting the optional reasoning hint for this Azure-specific path.
+        """
+        if not completion_args.get("tools") or not completion_args.get(
+            "reasoning_effort"
+        ):
+            return
+
+        api_base = str(completion_args.get("api_base") or "").lower()
+        if any(
+            host in api_base
+            for host in ("ai.azure.com", "openai.azure.com", "services.ai.azure.com")
+        ):
+            completion_args.pop("reasoning_effort", None)
+
     def response_api_handler(
         self,
         model: str,
@@ -66,6 +87,7 @@ class LiteLLMCompletionTransformationHandler:
         # making the HTTP call.
         completion_args.pop("client_metadata", None)
         completion_args.pop("output_config", None)
+        self._drop_azure_reasoning_effort_when_tools_present(completion_args)
 
         litellm_completion_response: Union[
             ModelResponse, litellm.CustomStreamWrapper
@@ -121,6 +143,10 @@ class LiteLLMCompletionTransformationHandler:
         # making the HTTP call.
         acompletion_args.pop("client_metadata", None)
         acompletion_args.pop("output_config", None)
+        # Router/aresponses may pass routing flags; must not reach litellm.acompletion().
+        for _routing_key in ("acompletion", "aresponses", "responses"):
+            acompletion_args.pop(_routing_key, None)
+        self._drop_azure_reasoning_effort_when_tools_present(acompletion_args)
 
         litellm_completion_response: Union[
             ModelResponse, litellm.CustomStreamWrapper

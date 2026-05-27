@@ -197,12 +197,9 @@ class LiteLLMCompletionResponsesConfig:
         reasoning_param = responses_api_request.get("reasoning")
         if reasoning_param:
             if isinstance(reasoning_param, dict):
-                # reasoning can be {"effort": "low|medium|high", "summary": "detailed"}
-                # Keep the full dict when summary is set so the responses API bridge can
-                # forward it; otherwise use the effort string for chat completion (e.g. Gemini).
-                if "summary" in reasoning_param:
-                    reasoning_effort = reasoning_param
-                elif "effort" in reasoning_param:
+                # Chat completions only accepts reasoning_effort, not Responses
+                # reasoning.summary. Keep summary out of the bridged request.
+                if "effort" in reasoning_param:
                     reasoning_effort = reasoning_param.get("effort")
                 else:
                     reasoning_effort = reasoning_param
@@ -980,6 +977,22 @@ class LiteLLMCompletionResponsesConfig:
                         LiteLLMCompletionResponsesConfig._add_tool_call_to_assistant(
                             prev_assistant, tool_call_chunk
                         )
+                    else:
+                        # No cache hit and no tools to reconstruct from.
+                        # Create a minimal placeholder so DeepSeek/OpenAI don't
+                        # reject "tool without preceding tool_calls".
+                        tool_call_chunk = ChatCompletionToolCallChunk(
+                            id=tool_call_id,
+                            type="function",
+                            function=ChatCompletionToolCallFunctionChunk(
+                                name="unknown_tool",
+                                arguments="{}",
+                            ),
+                            index=len(tool_calls),
+                        )
+                        LiteLLMCompletionResponsesConfig._add_tool_call_to_assistant(
+                            prev_assistant, tool_call_chunk
+                        )
 
         # Remove messages with empty tool_call_id that couldn't be fixed
         for idx in reversed(messages_to_remove):
@@ -1609,6 +1622,7 @@ class LiteLLMCompletionResponsesConfig:
         """
         tool_type = tool.get("type")
         if tool_type in {
+            "custom",
             "shell",
             "computer_use_preview",
             "namespace",
