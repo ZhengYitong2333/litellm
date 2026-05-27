@@ -14,6 +14,9 @@ sys.path.insert(0, os.path.abspath("../../../../../../.."))
 from litellm.llms.anthropic.experimental_pass_through.responses_adapters.transformation import (
     LiteLLMAnthropicToResponsesAPIAdapter,
 )
+from litellm.llms.anthropic.experimental_pass_through.responses_adapters.handler import (
+    _build_responses_kwargs,
+)
 from litellm.types.llms.anthropic import AnthropicMessagesRequest
 
 
@@ -28,6 +31,36 @@ def _make_request(**overrides) -> AnthropicMessagesRequest:
 
 
 _ADAPTER = LiteLLMAnthropicToResponsesAPIAdapter()
+
+
+class TestBuildResponsesKwargs:
+    def test_excludes_internal_acompletion_kwarg(self):
+        kwargs = _build_responses_kwargs(
+            max_tokens=1024,
+            messages=[{"role": "user", "content": "hello"}],
+            model="gpt-5.5",
+            extra_kwargs={
+                "acompletion": True,
+                "custom_llm_provider": "openai",
+            },
+        )
+
+        assert "acompletion" not in kwargs
+        assert kwargs["custom_llm_provider"] == "openai"
+
+    def test_azure_api_base_degrades_minimal_reasoning_to_low(self):
+        kwargs = _build_responses_kwargs(
+            max_tokens=1024,
+            messages=[{"role": "user", "content": "hello"}],
+            model="gpt-5.4",
+            thinking={"type": "enabled", "budget_tokens": 512},
+            extra_kwargs={
+                "api_base": "https://example.services.ai.azure.com/openai/v1",
+                "custom_llm_provider": "openai",
+            },
+        )
+
+        assert kwargs["reasoning"]["effort"] == "low"
 
 
 # ---------------------------------------------------------------------------

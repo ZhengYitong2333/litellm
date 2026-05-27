@@ -5,6 +5,12 @@ import litellm
 from litellm.types.utils import ModelInfo
 
 
+def uses_azure_openai_api_base(api_base: Optional[str]) -> bool:
+    return isinstance(api_base, str) and (
+        ".azure.com" in api_base or ".services.ai.azure.com" in api_base
+    )
+
+
 def is_reasoning_auto_summary_enabled() -> bool:
     """Check whether the default 'summary: detailed' injection is enabled (opt-in)."""
     return (

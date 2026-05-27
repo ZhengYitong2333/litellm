@@ -27,9 +27,8 @@ Tests cover (consolidating PRs #23706 and #22727):
 
 import os
 import sys
-from unittest.mock import MagicMock, patch
 
-import pytest
+import litellm
 
 # Anchor sys.path to this file's location — not the working-directory-relative
 # pattern Greptile flagged on PR #23706. Resolves correctly regardless of
@@ -66,9 +65,9 @@ def _call_prepare(extra_kwargs, model="gpt-4o", output_format=None, **overrides)
         stream=False,
         system=None,
         temperature=None,
-        thinking=None,
+        thinking=overrides.get("thinking"),
         tool_choice=None,
-        tools=None,
+        tools=overrides.get("tools"),
         top_k=None,
         top_p=None,
         output_format=output_format,
@@ -205,6 +204,71 @@ class TestOutputConfigStrippedFromCompletionKwargs:
         assert "output_config" not in completion_kwargs
         assert completion_kwargs.get("timeout") == 30
         assert completion_kwargs.get("user") == "end-user-123"
+
+    def test_internal_acompletion_kwarg_is_stripped(self):
+        result = _call_prepare(
+            extra_kwargs={
+                "acompletion": True,
+                "custom_llm_provider": "openai",
+            }
+        )
+        completion_kwargs = result[0] if isinstance(result, tuple) else result
+
+        assert "acompletion" not in completion_kwargs
+        assert completion_kwargs["custom_llm_provider"] == "openai"
+
+    def test_azure_api_base_degrades_minimal_reasoning_to_low(self):
+        result = _call_prepare(
+            extra_kwargs={
+                "api_base": "https://example.services.ai.azure.com/openai/v1",
+                "custom_llm_provider": "openai",
+            },
+            model="gpt-5.4",
+            thinking={"type": "enabled", "budget_tokens": 512},
+        )
+        completion_kwargs = result[0] if isinstance(result, tuple) else result
+
+        assert completion_kwargs["reasoning_effort"]["effort"] == "low"
+
+    def test_global_chat_completions_opt_out_prevents_responses_routing(self):
+        original = litellm.use_chat_completions_url_for_anthropic_messages
+        try:
+            litellm.use_chat_completions_url_for_anthropic_messages = True
+            result = _call_prepare(
+                extra_kwargs={"custom_llm_provider": "openai"},
+                model="gpt-5.5",
+                thinking={"type": "enabled", "budget_tokens": 1024},
+            )
+        finally:
+            litellm.use_chat_completions_url_for_anthropic_messages = original
+
+        completion_kwargs = result[0] if isinstance(result, tuple) else result
+        assert completion_kwargs["model"] == "gpt-5.5"
+
+    def test_global_chat_completions_opt_out_drops_reasoning_with_tools(self):
+        original = litellm.use_chat_completions_url_for_anthropic_messages
+        try:
+            litellm.use_chat_completions_url_for_anthropic_messages = True
+            result = _call_prepare(
+                extra_kwargs={"custom_llm_provider": "openai"},
+                model="gpt-5.5",
+                thinking={"type": "enabled", "budget_tokens": 1024},
+                tools=[
+                    {
+                        "name": "get_weather",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                        },
+                    }
+                ],
+            )
+        finally:
+            litellm.use_chat_completions_url_for_anthropic_messages = original
+
+        completion_kwargs = result[0] if isinstance(result, tuple) else result
+        assert "tools" in completion_kwargs
+        assert "reasoning_effort" not in completion_kwargs
 
 
 class TestEmptyExtraKwargsPath:

@@ -1356,6 +1356,101 @@ class TestAnthropicThinkingSignatureSelfHeal:
         )
         assert [b["type"] for b in out[0]["content"]] == ["text"]
 
+    def test_sanitize_anthropic_messages_strips_thinking_for_sophnet(self):
+        from litellm.llms.anthropic.common_utils import (
+            sanitize_anthropic_messages_for_upstream,
+        )
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "internal",
+                        "signature": "opaque-sig",
+                    },
+                    {"type": "text", "text": "answer"},
+                ],
+            }
+        ]
+        out = sanitize_anthropic_messages_for_upstream(
+            msgs,
+            api_base="https://www.sophnet.com/api/open-apis/anthropic",
+        )
+        assert [b["type"] for b in out[0]["content"]] == ["text"]
+
+    def test_sanitize_anthropic_tools_for_sophnet_drops_computer_and_shell(self):
+        from litellm.llms.anthropic.common_utils import (
+            sanitize_anthropic_tools_for_upstream,
+        )
+
+        tools = [
+            {
+                "name": "get_weather",
+                "description": "weather",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+            {
+                "type": "computer_use_preview",
+                "name": "computer",
+                "display_width_px": 1024,
+                "display_height_px": 768,
+            },
+            {"type": "shell", "environment": {"type": "local"}},
+            {"type": "namespace", "name": "codex"},
+        ]
+        out = sanitize_anthropic_tools_for_upstream(
+            tools,
+            api_base="https://www.sophnet.com/api/open-apis/anthropic",
+            model="claude-opus-4-7",
+        )
+        assert out is not None
+        assert len(out) == 1
+        assert out[0]["name"] == "get_weather"
+
+    def test_sanitize_anthropic_tools_for_sophnet_normalizes_web_search_name(self):
+        from litellm.llms.anthropic.common_utils import (
+            sanitize_anthropic_tools_for_upstream,
+        )
+
+        tools = [
+            {
+                "type": "web_search_20250305",
+                "name": "web_search_20250305",
+                "max_uses": 5,
+            }
+        ]
+        out = sanitize_anthropic_tools_for_upstream(
+            tools,
+            api_base="https://www.sophnet.com/api/open-apis/anthropic",
+            model="claude-opus-4-7",
+        )
+
+        assert out == [
+            {
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 5,
+            }
+        ]
+
+    def test_is_anthropic_compatible_gateway_opaque_error(self):
+        from litellm.llms.anthropic.common_utils import (
+            is_anthropic_compatible_gateway_opaque_error,
+        )
+
+        assert is_anthropic_compatible_gateway_opaque_error(
+            '{"error":{"type":"<nil>","message":" (request id: abc)"}}'
+        )
+        assert not is_anthropic_compatible_gateway_opaque_error(
+            "messages.0.content.1: Invalid `signature` in `thinking` block"
+        )
+
     def test_is_anthropic_invalid_redacted_thinking_data_error(self):
         from litellm.llms.anthropic.common_utils import (
             is_anthropic_invalid_redacted_thinking_data_error,
@@ -1417,6 +1512,17 @@ class TestAnthropicThinkingSignatureSelfHeal:
             is True
         )
 
+        opaque_err_text = (
+            '{"type":"error","error":{"type":"invalid_request_error",'
+            '"message":"{\\"error\\":{\\"type\\":\\"<nil>\\",'
+            '\\"message\\":\\" (request id: a) (request id: b)\\"}"}}'
+        )
+        resp_opaque = httpx.Response(400, request=req, text=opaque_err_text)
+        err_opaque = httpx.HTTPStatusError("bad", request=req, response=resp_opaque)
+        assert (
+            config.should_retry_anthropic_messages_on_http_error(err_opaque, {}) is True
+        )
+
         resp_bad = httpx.Response(400, request=req, text="rate limit exceeded")
         err_bad = httpx.HTTPStatusError("bad", request=req, response=resp_bad)
         assert (
@@ -1448,3 +1554,23 @@ class TestAnthropicThinkingSignatureSelfHeal:
         config.transform_anthropic_messages_request_on_http_error(err, data)
         assert "thinking" not in data
         assert data["messages"] == []
+
+        data_opaque = dict(data)
+        data_opaque["messages"] = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "x",
+                        "signature": "y",
+                    },
+                ],
+            }
+        ]
+        data_opaque["thinking"] = {"type": "enabled", "budget_tokens": 1024}
+        config.transform_anthropic_messages_request_on_http_error(
+            err_opaque, data_opaque
+        )
+        assert "thinking" not in data_opaque
+        assert data_opaque["messages"] == []

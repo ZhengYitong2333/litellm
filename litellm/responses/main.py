@@ -666,6 +666,11 @@ def _pop_use_chat_completions_api_kw(kwargs: Dict[str, Any]) -> bool:
     return bool(use_cc)
 
 
+def _supports_sophnet_native_responses_api(model: str) -> bool:
+    """Sophnet exposes OpenAI-compatible /v1/responses for GPT-5.5."""
+    return "gpt-5.5" in model.lower()
+
+
 def _resolve_model_provider_for_responses(
     model: str,
     custom_llm_provider: Optional[str],
@@ -977,14 +982,19 @@ def responses(
         _api_base = str(litellm_params.api_base or kwargs.get("api_base") or "").lower()
         # Codex /v1/responses: route through chat-completions bridge for providers
         # whose native Responses API rejects Codex payloads (Sophnet, MiniMax, Azure).
-        if any(
-            host in _api_base
-            for host in (
-                "sophnet.com",
-                "minimaxi.com",
-                "ai.azure.com",
-                "openai.azure.com",
-                "services.ai.azure.com",
+        if (
+            "minimaxi.com" in _api_base
+            or any(
+                host in _api_base
+                for host in (
+                    "ai.azure.com",
+                    "openai.azure.com",
+                    "services.ai.azure.com",
+                )
+            )
+            or (
+                "sophnet.com" in _api_base
+                and not _supports_sophnet_native_responses_api(model=model)
             )
         ):
             use_chat_completions_api = True

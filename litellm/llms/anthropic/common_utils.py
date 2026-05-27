@@ -798,6 +798,20 @@ def is_anthropic_invalid_thinking_signature_error(error_text: str) -> bool:
     )
 
 
+def is_anthropic_compatible_gateway_opaque_error(error_text: str) -> bool:
+    """
+    Detect opaque 400 bodies from Anthropic-compatible gateways (e.g. Sophnet) that
+    embed Go ``<nil>`` errors instead of a concrete validation message.
+
+    Example (from LiteLLM proxy logs):
+    {"error":{"type":"<nil>","message":" (request id: ...) (request id: ...)"}}
+    """
+    if not error_text:
+        return False
+    lower = error_text.lower()
+    return "<nil>" in lower or "\\u003cnil\\u003e" in lower
+
+
 def strip_redacted_thinking_blocks_from_anthropic_messages(
     messages: List[Any],
 ) -> List[Any]:
@@ -841,6 +855,59 @@ def _is_official_anthropic_api_base(api_base: Optional[str]) -> bool:
     return "anthropic.com" in lower
 
 
+def _should_drop_anthropic_tool_for_gateway(
+    tool: Any,
+    *,
+    api_base: Optional[str] = None,
+    model: Optional[str] = None,
+) -> bool:
+    """Drop tool definitions that third-party Anthropic gateways reject."""
+    if _is_official_anthropic_api_base(api_base):
+        return False
+    if not isinstance(tool, dict):
+        return False
+
+    tool_type = tool.get("type")
+    if not isinstance(tool_type, str):
+        return False
+
+    if tool_type in {"shell", "namespace"}:
+        return True
+
+    if tool_type == "computer_use_preview" or tool_type.startswith("computer_"):
+        return True
+
+    return False
+
+
+def sanitize_anthropic_tools_for_upstream(
+    tools: Optional[List[Any]],
+    *,
+    api_base: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Optional[List[Any]]:
+    """Filter tool lists before forwarding to Anthropic-compatible gateways."""
+    if not isinstance(tools, list):
+        return tools
+
+    filtered: List[Any] = []
+    for tool in tools:
+        if _should_drop_anthropic_tool_for_gateway(
+            tool, api_base=api_base, model=model
+        ):
+            continue
+        if (
+            not _is_official_anthropic_api_base(api_base)
+            and isinstance(tool, dict)
+            and isinstance(tool.get("type"), str)
+            and tool["type"].startswith("web_search_")
+            and tool.get("name") != "web_search"
+        ):
+            tool = {**tool, "name": "web_search"}
+        filtered.append(tool)
+    return filtered
+
+
 def sanitize_anthropic_messages_for_upstream(
     messages: List[Any],
     api_base: Optional[str] = None,
@@ -851,10 +918,13 @@ def sanitize_anthropic_messages_for_upstream(
     - Drops empty text blocks and invalid ``redacted_thinking`` blocks
     - Drops all ``redacted_thinking`` for non-official Anthropic-compatible gateways
       (e.g. Sophnet) that cannot round-trip encrypted thinking payloads
+    - Drops ``thinking`` history blocks for those gateways (signatures are not portable
+      across Bedrock / BYOK routing inside Sophnet)
     """
     messages = strip_empty_text_blocks_from_anthropic_messages(messages)
     if not _is_official_anthropic_api_base(api_base):
         messages = strip_redacted_thinking_blocks_from_anthropic_messages(messages)
+        messages = strip_thinking_blocks_from_anthropic_messages(messages)
     return messages
 
 

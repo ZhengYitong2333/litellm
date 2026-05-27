@@ -87,6 +87,7 @@ class LiteLLMCompletionTransformationHandler:
         # making the HTTP call.
         completion_args.pop("client_metadata", None)
         completion_args.pop("output_config", None)
+        completion_args.pop("acompletion", None)
         self._drop_azure_reasoning_effort_when_tools_present(completion_args)
 
         litellm_completion_response: Union[

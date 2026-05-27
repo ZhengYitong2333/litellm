@@ -15,8 +15,18 @@ from litellm.types.llms.openai import ResponsesAPIResponse
 
 from .streaming_iterator import AnthropicResponsesStreamWrapper
 from .transformation import LiteLLMAnthropicToResponsesAPIAdapter
+from ..utils import uses_azure_openai_api_base
 
 _ADAPTER = LiteLLMAnthropicToResponsesAPIAdapter()
+
+RESPONSES_ADAPTER_EXCLUDED_KWARGS = frozenset(
+    {
+        "anthropic_messages",
+        # Internal LiteLLM routing flag. Passing it through to aresponses()
+        # makes the downstream acompletion wrapper receive it twice.
+        "acompletion",
+    }
+)
 
 
 def _build_responses_kwargs(
@@ -86,6 +96,11 @@ def _build_responses_kwargs(
             model=model,
             custom_llm_provider=(extra_kwargs or {}).get("custom_llm_provider"),
         )
+        api_base = (extra_kwargs or {}).get("api_base") or (extra_kwargs or {}).get(
+            "base_url"
+        )
+        if normalized == "minimal" and uses_azure_openai_api_base(api_base):
+            normalized = "low"
         if normalized != effort:
             responses_kwargs["reasoning"] = {**reasoning, "effort": normalized}
 
@@ -93,7 +108,6 @@ def _build_responses_kwargs(
         responses_kwargs["stream"] = True
 
     # Forward litellm-specific kwargs (api_key, api_base, logging obj, etc.)
-    excluded = {"anthropic_messages"}
     for key, value in (extra_kwargs or {}).items():
         if key == "litellm_logging_obj" and value is not None:
             from litellm.litellm_core_utils.litellm_logging import (
@@ -107,7 +121,11 @@ def _build_responses_kwargs(
                 # (Mirrors the pattern used in LiteLLMMessagesToCompletionTransformationHandler.)
                 setattr(value, "call_type", CallTypes.anthropic_messages.value)
             responses_kwargs[key] = value
-        elif key not in excluded and key not in responses_kwargs and value is not None:
+        elif (
+            key not in RESPONSES_ADAPTER_EXCLUDED_KWARGS
+            and key not in responses_kwargs
+            and value is not None
+        ):
             responses_kwargs[key] = value
 
     return responses_kwargs

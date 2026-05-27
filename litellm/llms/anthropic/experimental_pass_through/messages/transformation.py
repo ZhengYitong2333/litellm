@@ -400,6 +400,23 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
         if not _has_advisor:
             messages = strip_advisor_blocks_from_messages(messages)  # type: ignore[assignment]
 
+        tools_param = anthropic_messages_optional_request_params.get("tools")
+        if isinstance(tools_param, list):
+            from litellm.llms.anthropic.common_utils import (
+                sanitize_anthropic_tools_for_upstream,
+            )
+
+            sanitized_tools = sanitize_anthropic_tools_for_upstream(
+                tools_param,
+                api_base=api_base,
+                model=model,
+            )
+            if sanitized_tools:
+                anthropic_messages_optional_request_params["tools"] = sanitized_tools
+            else:
+                anthropic_messages_optional_request_params.pop("tools", None)
+                anthropic_messages_optional_request_params.pop("tool_choice", None)
+
         anthropic_messages_request: AnthropicMessagesRequest = AnthropicMessagesRequest(
             messages=messages,
             max_tokens=max_tokens,
