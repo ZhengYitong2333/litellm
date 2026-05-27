@@ -9,6 +9,9 @@ from litellm.responses.litellm_completion_transformation.transformation import (
     TOOL_CALLS_CACHE,
     LiteLLMCompletionResponsesConfig,
 )
+from litellm.responses.litellm_completion_transformation.handler import (
+    LiteLLMCompletionTransformationHandler,
+)
 from litellm.types.llms.openai import (
     ChatCompletionResponseMessage,
     ChatCompletionToolMessage,
@@ -669,7 +672,9 @@ class TestFunctionCallTransformation:
 
         # Should be an assistant message
         assert message.get("role") == "assistant"
-        assert message.get("content") is None  # Function calls don't have content
+        assert (
+            message.get("content") == ""
+        )  # DeepSeek requires content or tool_calls; empty string is valid
 
         # Should have tool calls
         tool_calls = message.get("tool_calls", [])
@@ -807,6 +812,70 @@ class TestFunctionCallTransformation:
         assert tool_msg["role"] == "tool"
 
         assert result["extra_headers"] == {"X-Test-Header": "test-value"}
+
+    def test_reasoning_summary_is_not_forwarded_as_reasoning_effort(self):
+        """Responses reasoning.summary is not a chat-completions reasoning_effort value."""
+        result = LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
+            model="openai/gpt-5.5",
+            input="Only reply OK",
+            responses_api_request={
+                "reasoning": {"effort": "medium", "summary": "none"},
+            },
+        )
+
+        assert result["reasoning_effort"] == "medium"
+
+    def test_custom_tool_is_not_forwarded_to_chat_completions(self):
+        """Responses custom tools are not valid Chat Completions tools."""
+        tools = [
+            {
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "Apply a patch in freeform syntax.",
+            },
+            {
+                "type": "function",
+                "name": "exec_command",
+                "description": "Run a command.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"cmd": {"type": "string"}},
+                    "required": ["cmd"],
+                },
+            },
+        ]
+
+        result = LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
+            model="openai/gpt-5.5",
+            input="Only reply OK",
+            responses_api_request={"tools": tools},
+        )
+
+        assert [tool["function"]["name"] for tool in result["tools"]] == [
+            "exec_command"
+        ]
+
+    def test_azure_tools_drop_reasoning_effort_before_chat_completion(self):
+        """Azure chat-completions hangs when tools and reasoning_effort are sent together."""
+        completion_args = {
+            "api_base": "https://example.services.ai.azure.com/models",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "exec_command",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            "reasoning_effort": "medium",
+        }
+
+        LiteLLMCompletionTransformationHandler._drop_azure_reasoning_effort_when_tools_present(
+            completion_args
+        )
+
+        assert "reasoning_effort" not in completion_args
 
     def test_function_call_without_call_id_fallback_to_id(self):
         """Test that function_call items can use 'id' field when 'call_id' is missing"""
@@ -1440,9 +1509,10 @@ class TestToolTransformation:
         )
 
         assert web_search_options is None
-        assert len(result_tools) == 1
-        assert result_tools[0]["type"] == "function"
-        assert result_tools[0]["function"]["name"] == "codex_tool"
+        # Custom/Codex built-in tools are dropped by
+        # _should_drop_responses_builtin_tool so they don't cause
+        # OpenAI-compatible providers to reject the request.
+        assert len(result_tools) == 0
 
 
 class TestUsageTransformation:
@@ -2295,6 +2365,34 @@ class TestEnsureOutputItemContentPartAdded:
 
         events = iterator._pending_response_events
         assert len(events) == 2
+
+    def test_empty_choices_skipped_without_error(self):
+        """Provider heartbeat chunks with choices=[] must not raise IndexError."""
+        from unittest.mock import MagicMock
+
+        iterator = self._make_iterator()
+        chunk = MagicMock()
+        chunk.choices = []
+
+        iterator._ensure_output_item_for_chunk(chunk)
+
+        assert iterator._pending_response_events == []
+        assert iterator.sent_output_item_added_event is False
+
+    def test_transform_empty_choices_returns_none(self):
+        """_transform_chat_completion_chunk_to_response_api_chunk must tolerate choices=[]."""
+        from unittest.mock import MagicMock
+
+        iterator = self._make_iterator()
+        chunk = MagicMock()
+        chunk.choices = []
+        chunk.id = "chunk-empty"
+
+        assert (
+            iterator._transform_chat_completion_chunk_to_response_api_chunk(chunk)
+            is None
+        )
+        assert iterator._get_delta_string_from_streaming_choices([]) == ""
 
 
 class TestCacheControlPreservation:

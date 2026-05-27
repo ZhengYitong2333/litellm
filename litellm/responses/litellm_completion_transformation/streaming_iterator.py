@@ -133,6 +133,8 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             return None
 
     def _is_reasoning_end(self, chunk):
+        if not chunk.choices:
+            return False
         delta = chunk.choices[0].delta
 
         # if this indicates reasoning content, don't consider reasoning ended
@@ -442,7 +444,6 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         )
         event.__dict__["sequence_number"] = self._sequence_number
         return event
-        
 
     def create_output_item_added_event(self) -> OutputItemAddedEvent:
         if self._cached_item_id is None:
@@ -808,13 +809,19 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         # Change: Never return a value, just enqueue output item events
         if self.sent_output_item_added_event:
             return
+        # Some providers emit heartbeat/metadata chunks with empty choices.
+        if not chunk.choices:
+            return
         delta = chunk.choices[0].delta
 
         self._sequence_number += 1
         self.sent_output_item_added_event = True
 
         # Reasoning-first
-        if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+        # Note: Some providers (DeepSeek) send reasoning_content="" (falsy) in the
+        # first chunk. Use `is not None` to catch empty-string reasoning deltas
+        # while still rejecting absent reasoning_content attributes.
+        if hasattr(delta, "reasoning_content") and delta.reasoning_content is not None:
             self._reasoning_active = True
             if self._cached_reasoning_item_id is None:
                 self._cached_reasoning_item_id = f"rs_{uuid.uuid4()}"
@@ -1044,6 +1051,65 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                             cast(ModelResponseStream, chunk)
                         )
                     )
+                    # --- Reasoning-end detection (sync equivalent of __anext__) ---
+                    if self._reasoning_active and not self._reasoning_done_emitted:
+                        delta = chunk.choices[0].delta if chunk.choices else None
+                        if (
+                            delta
+                            and hasattr(delta, "reasoning_content")
+                            and delta.reasoning_content
+                        ):
+                            self._accumulated_reasoning_content_parts.append(
+                                delta.reasoning_content
+                            )
+                        if self._is_reasoning_end(chunk):
+                            reasoning_content = "".join(
+                                self._accumulated_reasoning_content_parts
+                            )
+
+                            reasoning_item_id = (
+                                self._reasoning_item_id
+                                or self._cached_reasoning_item_id
+                                or f"rs_{uuid.uuid4()}"
+                            )
+
+                            self._sequence_number += 1
+                            text_done_event = (
+                                self.create_reasoning_summary_text_done_event(
+                                    reasoning_item_id=reasoning_item_id,
+                                    reasoning_content=reasoning_content,
+                                    sequence_number=self._sequence_number,
+                                )
+                            )
+
+                            self._sequence_number += 1
+                            part_done_event = (
+                                self.create_reasoning_summary_part_done_event(
+                                    reasoning_item_id=reasoning_item_id,
+                                    reasoning_content=reasoning_content,
+                                    sequence_number=self._sequence_number,
+                                )
+                            )
+
+                            self._sequence_number += 1
+                            reasoning_output_item_done_event = (
+                                self.create_reasoning_output_item_done_event(
+                                    reasoning_item_id=reasoning_item_id,
+                                    reasoning_content=reasoning_content,
+                                    sequence_number=self._sequence_number,
+                                )
+                            )
+                            self._pending_response_events.extend(
+                                [
+                                    text_done_event,
+                                    part_done_event,
+                                    reasoning_output_item_done_event,
+                                ]
+                            )
+                            self._reasoning_done_emitted = True
+                            self._reasoning_active = False
+                    # --- End reasoning-end detection ---
+
                     # Emit any just-queued output_item event
                     if self._pending_response_events:
                         return self._pending_response_events.pop(0)
@@ -1073,6 +1139,15 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         and the ReasoningSummaryTextDeltaEvent, which is used by the responses API to emit reasoning content.
         It also handles emitting annotation.added events when annotations are detected in the chunk.
         """
+        if not chunk.choices:
+            pending_annotations = getattr(self, "_pending_annotation_events", None)
+            if pending_annotations:
+                return pending_annotations.pop(0)
+            pending_tools = getattr(self, "_pending_tool_events", None)
+            if pending_tools:
+                return pending_tools.pop(0)
+            return None
+
         item_id = self._cached_item_id or chunk.id
 
         # Check if this chunk has annotations first (before processing text/reasoning)
@@ -1106,7 +1181,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         if (
             chunk.choices
             and hasattr(chunk.choices[0].delta, "reasoning_content")
-            and chunk.choices[0].delta.reasoning_content
+            and chunk.choices[0].delta.reasoning_content is not None
         ):
             reasoning_content = chunk.choices[0].delta.reasoning_content
             reasoning_item_id = (
@@ -1195,6 +1270,8 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
 
         It's unclear how users expect litellm to translate multiple-choices-per-chunk to the responses API output.
         """
+        if not choices:
+            return ""
         choice = choices[0]
         chat_completion_delta: ChatCompletionDelta = choice.delta
         return chat_completion_delta.content or ""
