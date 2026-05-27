@@ -109,6 +109,12 @@ test-config
 
 # Local personal deployment stacks (not for upstream PR)
 deploy/sophnet-azure/
+!deploy/sophnet-azure/docker-compose.yml
+!deploy/sophnet-azure/Dockerfile.patch
+!deploy/sophnet-azure/restart-proxy.sh
+!deploy/sophnet-azure/test_corner_cases.py
+!deploy/sophnet-azure/TESTING_WORKFLOW.md
+!deploy/sophnet-azure/VSCODE_CC_CODEX.md
 
 # Local dev / test artifacts
 .local/

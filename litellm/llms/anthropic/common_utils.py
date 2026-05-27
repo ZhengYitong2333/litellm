@@ -855,6 +855,13 @@ def _is_official_anthropic_api_base(api_base: Optional[str]) -> bool:
     return "anthropic.com" in lower
 
 
+def _is_deepseek_api_base(api_base: Optional[str]) -> bool:
+    """DeepSeek Anthropic Messages API requires thinking blocks in history round-trip."""
+    if not api_base:
+        return False
+    return "deepseek.com" in api_base.lower()
+
+
 def _should_drop_anthropic_tool_for_gateway(
     tool: Any,
     *,
@@ -918,12 +925,14 @@ def sanitize_anthropic_messages_for_upstream(
     - Drops empty text blocks and invalid ``redacted_thinking`` blocks
     - Drops all ``redacted_thinking`` for non-official Anthropic-compatible gateways
       (e.g. Sophnet) that cannot round-trip encrypted thinking payloads
-    - Drops ``thinking`` history blocks for those gateways (signatures are not portable
-      across Bedrock / BYOK routing inside Sophnet)
+    - Drops ``thinking`` history blocks for third-party gateways (e.g. Sophnet) where
+      signatures are not portable; preserves them for DeepSeek's Anthropic Messages API
     """
     messages = strip_empty_text_blocks_from_anthropic_messages(messages)
-    if not _is_official_anthropic_api_base(api_base):
-        messages = strip_redacted_thinking_blocks_from_anthropic_messages(messages)
+    if _is_official_anthropic_api_base(api_base):
+        return messages
+    messages = strip_redacted_thinking_blocks_from_anthropic_messages(messages)
+    if not _is_deepseek_api_base(api_base):
         messages = strip_thinking_blocks_from_anthropic_messages(messages)
     return messages
 

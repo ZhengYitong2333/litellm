@@ -1380,6 +1380,31 @@ class TestAnthropicThinkingSignatureSelfHeal:
         )
         assert [b["type"] for b in out[0]["content"]] == ["text"]
 
+    def test_sanitize_anthropic_messages_preserves_thinking_for_deepseek(self):
+        from litellm.llms.anthropic.common_utils import (
+            sanitize_anthropic_messages_for_upstream,
+        )
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "plan tool call",
+                        "signature": "sig-abc",
+                    },
+                    {"type": "text", "text": "answer"},
+                ],
+            }
+        ]
+        out = sanitize_anthropic_messages_for_upstream(
+            msgs,
+            api_base="https://api.deepseek.com/anthropic",
+        )
+        assert [b["type"] for b in out[0]["content"]] == ["thinking", "text"]
+        assert out[0]["content"][0]["thinking"] == "plan tool call"
+
     def test_sanitize_anthropic_tools_for_sophnet_drops_computer_and_shell(self):
         from litellm.llms.anthropic.common_utils import (
             sanitize_anthropic_tools_for_upstream,
