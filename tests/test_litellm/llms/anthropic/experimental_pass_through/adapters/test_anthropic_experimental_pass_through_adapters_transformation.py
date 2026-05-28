@@ -1150,6 +1150,90 @@ def test_translate_anthropic_messages_to_openai_tool_result_single_item_backward
     assert tool_message["content"] == "72°F and sunny"
 
 
+@pytest.mark.parametrize(
+    "tool_result_content, description",
+    [
+        ([], "empty content list"),
+        ([{"type": "unknown_block", "foo": "bar"}], "single unconvertible dict item"),
+        (
+            [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": ""},
+                }
+            ],
+            "single image that fails to convert",
+        ),
+    ],
+)
+def test_translate_anthropic_messages_to_openai_tool_result_always_emits_tool_message(
+    tool_result_content, description
+):
+    """
+    Every tool_result must produce exactly one tool message, even when the content
+    list is empty or yields nothing usable.
+
+    Regression test for orphaned tool_calls: when the list branch dropped the tool
+    message, the preceding assistant tool_call had no response, and providers
+    (Azure/OpenAI/DeepSeek) rejected the request with
+    "An assistant message with 'tool_calls' must be followed by tool messages".
+    """
+
+    anthropic_messages = [
+        AnthropicMessagesUserMessageParam(
+            role="user",
+            content=[{"type": "text", "text": "Run the tool"}],
+        ),
+        AnthopicMessagesAssistantMessageParam(
+            role="assistant",
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": "toolu_orphan_check",
+                    "name": "do_thing",
+                    "input": {},
+                }
+            ],
+        ),
+        AnthropicMessagesUserMessageParam(
+            role="user",
+            content=[
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_orphan_check",
+                    "content": tool_result_content,
+                }
+            ],
+        ),
+    ]
+
+    adapter = LiteLLMAnthropicMessagesAdapter()
+    result = adapter.translate_anthropic_messages_to_openai(messages=anthropic_messages)
+
+    tool_messages = [
+        msg for msg in result if isinstance(msg, dict) and msg.get("role") == "tool"
+    ]
+
+    assert (
+        len(tool_messages) == 1
+    ), f"Expected exactly one tool message for {description}, got {len(tool_messages)}"
+    assert tool_messages[0]["tool_call_id"] == "toolu_orphan_check"
+
+    # Every assistant tool_call_id must have a matching tool message so the request
+    # is not rejected as an orphaned tool_call.
+    assistant_tool_call_ids = {
+        tc["id"]
+        for msg in result
+        if isinstance(msg, dict) and msg.get("role") == "assistant"
+        for tc in (msg.get("tool_calls") or [])
+    }
+    answered_tool_call_ids = {msg["tool_call_id"] for msg in tool_messages}
+    assert assistant_tool_call_ids <= answered_tool_call_ids, (
+        f"Orphaned tool_call for {description}: "
+        f"{assistant_tool_call_ids - answered_tool_call_ids}"
+    )
+
+
 def test_streaming_chunk_with_both_text_and_tool_calls_issue_18238():
     """
     When a streaming choice contains both text content and tool_calls,
@@ -2506,3 +2590,44 @@ def test_translate_anthropic_tool_choice_none():
 
     result = adapter.translate_anthropic_tool_choice_to_openai({"type": "none"})
     assert result == "none"
+
+
+def test_translate_anthropic_to_openai_inserts_placeholder_for_missing_tool_result():
+    """
+    Azure/OpenAI chat providers reject assistant tool_calls without matching tool
+    messages. CC history may omit a tool_result; normalize after adapter translation.
+    """
+    from litellm.types.llms.anthropic import AnthropicMessagesRequest
+
+    missing_id = "call_00_TjZNzh5jJkzHkS899Zca5044"
+    anthropic_request = AnthropicMessagesRequest(
+        model="azure-gpt-5.5",
+        max_tokens=256,
+        messages=[
+            {"role": "user", "content": "run a command"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": missing_id,
+                        "name": "Bash",
+                        "input": {"command": "ls"},
+                    }
+                ],
+            },
+            {"role": "user", "content": "continue"},
+        ],
+    )
+
+    adapter = LiteLLMAnthropicMessagesAdapter()
+    openai_request, _ = adapter.translate_anthropic_to_openai(
+        anthropic_message_request=anthropic_request
+    )
+    messages = openai_request["messages"]
+
+    assistant_idx = next(
+        i for i, m in enumerate(messages) if m.get("role") == "assistant"
+    )
+    assert messages[assistant_idx + 1]["role"] == "tool"
+    assert messages[assistant_idx + 1]["tool_call_id"] == missing_id

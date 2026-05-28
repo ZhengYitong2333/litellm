@@ -446,51 +446,42 @@ class LiteLLMAnthropicMessagesAdapter:
                                 # (each tool_use must have exactly one tool_result)
                                 content_items = list(content.get("content", []))
 
-                                # For single-item content, maintain backward compatibility with string/url format
-                                if len(content_items) == 1:
-                                    c = content_items[0]
-                                    if isinstance(c, str):
-                                        tool_result = ChatCompletionToolMessage(
-                                            role="tool",
-                                            tool_call_id=content.get("tool_use_id", ""),
-                                            content=c,
+                                # For a single text/string item, maintain backward
+                                # compatibility with the string content format; everything
+                                # else is combined into a list of content parts.
+                                tool_result_content: Union[
+                                    str,
+                                    List[
+                                        Union[
+                                            ChatCompletionTextObject,
+                                            ChatCompletionImageObject,
+                                        ]
+                                    ],
+                                ]
+                                if len(content_items) == 1 and isinstance(
+                                    content_items[0], str
+                                ):
+                                    tool_result_content = content_items[0]
+                                elif (
+                                    len(content_items) == 1
+                                    and isinstance(content_items[0], dict)
+                                    and content_items[0].get("type") == "text"
+                                ):
+                                    tool_result_content = content_items[0].get(
+                                        "text", ""
+                                    )
+                                elif (
+                                    len(content_items) == 1
+                                    and isinstance(content_items[0], dict)
+                                    and content_items[0].get("type") == "image"
+                                ):
+                                    source = content_items[0].get("source", {})
+                                    tool_result_content = (
+                                        self._translate_anthropic_image_to_openai(
+                                            cast(dict, source)
                                         )
-                                        self._add_cache_control_if_applicable(
-                                            content, tool_result, model
-                                        )
-                                        tool_message_list.append(tool_result)  # type: ignore[arg-type]
-                                    elif isinstance(c, dict):
-                                        if c.get("type") == "text":
-                                            tool_result = ChatCompletionToolMessage(
-                                                role="tool",
-                                                tool_call_id=content.get(
-                                                    "tool_use_id", ""
-                                                ),
-                                                content=c.get("text", ""),
-                                            )
-                                            self._add_cache_control_if_applicable(
-                                                content, tool_result, model
-                                            )
-                                            tool_message_list.append(tool_result)  # type: ignore[arg-type]
-                                        elif c.get("type") == "image":
-                                            source = c.get("source", {})
-                                            openai_image_url = (
-                                                self._translate_anthropic_image_to_openai(
-                                                    cast(dict, source)
-                                                )
-                                                or ""
-                                            )
-                                            tool_result = ChatCompletionToolMessage(
-                                                role="tool",
-                                                tool_call_id=content.get(
-                                                    "tool_use_id", ""
-                                                ),
-                                                content=openai_image_url,
-                                            )
-                                            self._add_cache_control_if_applicable(
-                                                content, tool_result, model
-                                            )
-                                            tool_message_list.append(tool_result)  # type: ignore[arg-type]
+                                        or ""
+                                    )
                                 else:
                                     # For multiple content items, combine into a single tool message
                                     # with list content to preserve all items while having one tool_use_id
@@ -532,17 +523,23 @@ class LiteLLMAnthropicMessagesAdapter:
                                                             ),
                                                         )
                                                     )
-                                    # Create a single tool message with combined content
-                                    if combined_content_parts:
-                                        tool_result = ChatCompletionToolMessage(
-                                            role="tool",
-                                            tool_call_id=content.get("tool_use_id", ""),
-                                            content=combined_content_parts,  # type: ignore
-                                        )
-                                        self._add_cache_control_if_applicable(
-                                            content, tool_result, model
-                                        )
-                                        tool_message_list.append(tool_result)  # type: ignore[arg-type]
+                                    tool_result_content = combined_content_parts
+
+                                # Always emit exactly one tool message per tool_result so the
+                                # matching tool_call_id is answered. Fall back to an empty
+                                # string when nothing usable was extracted (empty content
+                                # list or unconvertible items) — otherwise the tool_call is
+                                # left orphaned and providers reject the request with
+                                # "tool_calls must be followed by tool messages".
+                                tool_result = ChatCompletionToolMessage(
+                                    role="tool",
+                                    tool_call_id=content.get("tool_use_id", ""),
+                                    content=tool_result_content or "",  # type: ignore
+                                )
+                                self._add_cache_control_if_applicable(
+                                    content, tool_result, model
+                                )
+                                tool_message_list.append(tool_result)  # type: ignore[arg-type]
 
             if len(tool_message_list) > 0:
                 new_messages.extend(tool_message_list)
@@ -1181,6 +1178,8 @@ class LiteLLMAnthropicMessagesAdapter:
             messages=messages_list,
             model=anthropic_message_request.get("model"),
         )
+        ## NORMALIZE ORPHANED TOOL CALLS
+        new_messages = self._insert_missing_tool_result_placeholders(new_messages)
         ## ADD SYSTEM MESSAGE TO MESSAGES
         self._add_system_message_to_messages(new_messages, anthropic_message_request)
 
@@ -1219,6 +1218,69 @@ class LiteLLMAnthropicMessagesAdapter:
         )
 
         return new_kwargs, tool_name_mapping
+
+    @staticmethod
+    def _insert_missing_tool_result_placeholders(
+        messages: List[AllMessageValues],
+    ) -> List[AllMessageValues]:
+        """
+        Ensure every assistant ``tool_calls`` entry is answered by a following
+        ``tool`` message.
+
+        Some clients (e.g. Claude Code history) replay an assistant turn that made
+        tool calls but omit the matching ``tool_result`` (the next user turn is plain
+        text like "continue"). Azure/OpenAI/DeepSeek chat endpoints reject this with
+        "An assistant message with 'tool_calls' must be followed by tool messages
+        responding to each 'tool_call_id'". For any orphaned ``tool_call_id`` we
+        insert an empty placeholder ``tool`` message immediately after the assistant's
+        existing tool messages so the request stays valid.
+        """
+        normalized: List[AllMessageValues] = []
+        index = 0
+        total = len(messages)
+        while index < total:
+            message = messages[index]
+            normalized.append(message)
+
+            tool_calls = (
+                message.get("tool_calls")
+                if isinstance(message, dict) and message.get("role") == "assistant"
+                else None
+            )
+            if not tool_calls:
+                index += 1
+                continue
+
+            # Carry over any tool messages that already answer this assistant turn,
+            # tracking which tool_call_ids are covered.
+            answered_ids: set = set()
+            lookahead = index + 1
+            while (
+                lookahead < total
+                and isinstance(messages[lookahead], dict)
+                and messages[lookahead].get("role") == "tool"
+            ):
+                tool_message = messages[lookahead]
+                normalized.append(tool_message)
+                answered_id = tool_message.get("tool_call_id")
+                if answered_id:
+                    answered_ids.add(answered_id)
+                lookahead += 1
+
+            for tool_call in tool_calls:
+                tool_call_id = tool_call.get("id")
+                if tool_call_id and tool_call_id not in answered_ids:
+                    normalized.append(
+                        ChatCompletionToolMessage(
+                            role="tool",
+                            tool_call_id=tool_call_id,
+                            content="",
+                        )
+                    )
+
+            index = lookahead
+
+        return normalized
 
     def _translate_anthropic_image_to_openai(self, image_source: dict) -> Optional[str]:
         """
