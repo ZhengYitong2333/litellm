@@ -56,9 +56,12 @@ uv run pytest tests/test_litellm/llms/anthropic/experimental_pass_through/respon
 ```bash
 cd deploy/sophnet-azure
 python3 test_corner_cases.py              # --quick 默认
-python3 test_corner_cases.py --full       # streaming、reasoning、扩展 adapter
+python3 test_corner_cases.py --matrix     # CC/Codex x 全模型矩阵（并行）
+python3 test_corner_cases.py --full       # full + matrix（streaming、reasoning、回归）
 python3 test_corner_cases.py --stress     # 小并发，可能 429，勿作 CI 默认
 python3 test_corner_cases.py --list       # 查看矩阵
+# 并行 worker 数（默认 4）
+LITELLM_TEST_WORKERS=6 python3 test_corner_cases.py --matrix --full
 ```
 
 约定：
@@ -91,7 +94,7 @@ curl -s http://localhost:4000/v1/messages \
 | 字段 | 说明 |
 |------|------|
 | `id` | 稳定标识，如 `messages.claude.web_search_tool` |
-| `tier` | `quick` / `full` / `stress` |
+| `tier` | `quick` / `full` / `matrix` / `stress` |
 | `why` | 绑定的历史故障一句话 |
 | `expect` | `ok`（默认）或 `fail`（期望 4xx） |
 
@@ -99,30 +102,47 @@ curl -s http://localhost:4000/v1/messages \
 
 1. 先 `--list` 查是否已有等价 case。
 2. `quick` 保持可在几分钟内跑完；全模型 chat 连通各一条即可。
-3. streaming / burst 放 `full` 或 `stress`。
+3. CC/Codex x 全模型矩阵放 `matrix`；`--full` 自动包含 matrix。
+4. streaming / burst 放 `full` 或 `stress`。
+5. 上游 429 或 Sophnet opaque `<nil>` 400 计为 skip，不算 LiteLLM 失败。
 
 ## 5. Corner-case 矩阵（当前）
 
-| id | tier | 历史问题 |
-|----|------|----------|
-| `chat.basic.*` | quick | Key、路由、模型别名、基础连通 |
-| `responses.gpt55.native` | quick | GPT-5.5 必须走原生 `/v1/responses` |
-| `messages.claude.basic` | quick | Anthropic 原生 messages |
-| `messages.claude.thinking` | quick | Extended thinking |
-| `messages.claude.web_search_tool` | quick | `web_search_*` name 归一化 |
-| `messages.claude.codex_tools` | quick | shell/namespace/computer 过滤 |
-| `messages.claude.thinking_history` | quick | 无效 thinking 签名剥离 |
-| `messages.claude.redacted_history` | quick | redacted_thinking 剥离 |
-| `adapter.glm.output_config_json` | quick | `output_config.format` 适配 |
-| `auth.bad_key` | quick | 错误 master key → 401 |
-| `stream.chat.ttfb.*` | full | Chat 流式 TTFB |
-| `messages.claude.stream` | full | Messages 流式 |
-| `adapter.azure.thinking_tools` | full | Azure reasoning+tools 不挂起 |
-| `adapter.glm.temperature_zero` | full | GLM temperature=0 应失败 |
-| `messages.claude.output_format_json` | full | `output_format` JSON schema |
-| `messages.claude.tool_history` | full | tool_result 多轮 |
-| `chat.reasoning.*` | full | Chat 路径 reasoning |
-| `stress.burst.*` | stress | 小并发 |
+### quick tier
+
+- `chat.basic.*` — Key、路由、模型别名、基础连通
+- `responses.gpt55.native` — GPT-5.5 必须走原生 `/v1/responses`
+- `messages.claude.basic` — Anthropic 原生 messages
+- `messages.claude.thinking` — Extended thinking
+- `messages.claude.web_search_tool` — `web_search_*` name 归一化
+- `messages.claude.codex_tools` — shell/namespace/computer 过滤（上游 opaque 400 → skip）
+- `messages.claude.thinking_history` — 无效 thinking 签名剥离
+- `messages.claude.redacted_history` — redacted_thinking 剥离
+- `adapter.glm.output_config_json` — `output_config.format` 适配
+- `auth.bad_key` — 错误 master key → 401
+
+### matrix tier（CC / Codex x 全模型，并行执行）
+
+- `messages.basic.*` — CC `/v1/messages` x 每个 `CHAT_MODELS` 别名（Claude 原生，其余 adapter）
+- `responses.basic.*` — Codex `/v1/responses` x 每个 `CHAT_MODELS` 别名（GPT 原生/桥接，其余 chat bridge）
+- `messages.adapter.orphan_tool_call.{azure-gpt-5.5,sophnet-glm-5.1}` — assistant `tool_use` 缺 `tool_result` 时插入占位
+- `messages.adapter.empty_tool_result.{azure-gpt-5.5,sophnet-glm-5.1}` — `tool_result` 的 `content: []` 仍发出 tool 消息
+- `responses.bridge.interleaved_tool_result` — `function_call` 与 `function_call_output` 被 user 打断时重排（azure-gpt-5.5）
+- `responses.bridge.orphan_tool_call` — 缺 `function_call_output` 时插入占位（azure-gpt-5.5）
+
+### full tier
+
+- `stream.chat.ttfb.*` — Chat 流式 TTFB
+- `messages.claude.stream` — Messages 流式
+- `adapter.azure.thinking_tools` — Azure reasoning+tools 不挂起
+- `adapter.glm.temperature_zero` — GLM temperature=0 应失败
+- `messages.claude.output_format_json` — `output_format` JSON schema
+- `messages.claude.tool_history` — tool_result 多轮
+- `chat.reasoning.*` — Chat 路径 reasoning
+
+### stress tier
+
+- `stress.burst.*` — 小并发
 
 ## 6. 提交
 

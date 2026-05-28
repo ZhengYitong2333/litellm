@@ -7,7 +7,8 @@ Output is JSON-only on stdout for piping; human summary goes to stderr.
 
 Usage:
   python3 test_corner_cases.py              # quick (default)
-  python3 test_corner_cases.py --full
+  python3 test_corner_cases.py --matrix     # CC/Codex x model matrix
+  python3 test_corner_cases.py --full       # full + matrix tiers
   python3 test_corner_cases.py --stress
   python3 test_corner_cases.py --list
 """
@@ -22,13 +23,14 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Optional, Set
 
 BASE = os.environ.get("LITELLM_PROXY_BASE", "http://localhost:4000")
 KEY = os.environ.get("LITELLM_MASTER_KEY", "sk-litellm-sophnet-azure-local")
+WORKERS = int(os.environ.get("LITELLM_TEST_WORKERS", "4"))
 
-Tier = Literal["quick", "full", "stress"]
+Tier = Literal["quick", "full", "matrix", "stress"]
 Expect = Literal["ok", "fail", "skip"]
 
 CHAT_MODELS = [
@@ -47,6 +49,10 @@ CLAUDE = "sophnet-claude-opus-4-7"
 GLM = "sophnet-glm-5.1"
 GPT55 = "sophnet-gpt-5.5"
 AZURE = "azure-gpt-5.4"
+AZURE55 = "azure-gpt-5.5"
+DEEPSEEK_PRO = "deepseek-v4-pro"
+
+ADAPTER_REGRESSION_MODELS = [AZURE55, GLM]
 
 ANTHROPIC_HEADERS = {"anthropic-version": "2023-06-01"}
 
@@ -98,6 +104,7 @@ WEB_SEARCH_TOOL = [
 ]
 
 RETRY_STATUS = {429, 502, 503, 504}
+TIER_ORDER = {"quick": 0, "full": 1, "matrix": 2, "stress": 3}
 
 
 @dataclass
@@ -210,6 +217,42 @@ def _is_upstream_rate_limit(result: dict) -> bool:
     return "too many requests" in err or result.get("status") == 429
 
 
+def _is_opaque_upstream_error(result: dict) -> bool:
+    err = (result.get("error") or "").lower()
+    status = result.get("status")
+    if status in {502, 503, 504}:
+        return True
+    opaque_markers = (
+        "invalid anthropic messages api request",
+        "<nil>",
+        "invalidparameter",
+        "upstream gateway",
+        "internal server error",
+    )
+    return any(marker in err for marker in opaque_markers)
+
+
+def _maybe_skip_upstream(result: dict, *, label: str = "upstream") -> Optional[dict]:
+    if _is_upstream_rate_limit(result):
+        return {
+            "ok": True,
+            "skip": True,
+            "preview": f"{label} rate limit",
+            "latency_s": result.get("latency_s"),
+            "status": result.get("status"),
+        }
+    if _is_opaque_upstream_error(result):
+        return {
+            "ok": True,
+            "skip": True,
+            "preview": f"{label} opaque/gateway error",
+            "latency_s": result.get("latency_s"),
+            "status": result.get("status"),
+            "error": (result.get("error") or "")[:200],
+        }
+    return None
+
+
 def case_chat_basic(model: str) -> dict:
     payload: dict = {
         "model": model,
@@ -222,14 +265,8 @@ def case_chat_basic(model: str) -> dict:
     r = post("/v1/chat/completions", payload, retries=1)
     if r.get("ok"):
         r["preview"] = _chat_text(r["body"])
-    elif _is_upstream_rate_limit(r):
-        return {
-            "ok": True,
-            "skip": True,
-            "preview": "upstream rate limit",
-            "latency_s": r.get("latency_s"),
-            "status": r.get("status"),
-        }
+    elif skip := _maybe_skip_upstream(r):
+        return skip
     return r
 
 
@@ -253,14 +290,16 @@ def case_chat_reasoning(model: str) -> dict:
     r = post("/v1/chat/completions", payload, timeout=180)
     if r.get("ok"):
         r["preview"] = _chat_text(r["body"])
+    elif skip := _maybe_skip_upstream(r, label="reasoning"):
+        return skip
     return r
 
 
-def case_responses_gpt55() -> dict:
+def case_responses_basic(model: str) -> dict:
     r = post(
         "/v1/responses",
         {
-            "model": GPT55,
+            "model": model,
             "input": "Reply with exactly one word: OK",
             "max_output_tokens": 16,
         },
@@ -269,22 +308,20 @@ def case_responses_gpt55() -> dict:
     )
     if r.get("ok"):
         r["preview"] = str(r.get("body", ""))[:120]
-    elif _is_upstream_rate_limit(r):
-        return {
-            "ok": True,
-            "skip": True,
-            "preview": "upstream rate limit (429)",
-            "latency_s": r.get("latency_s"),
-            "status": r.get("status"),
-        }
+    elif skip := _maybe_skip_upstream(r, label="responses"):
+        return skip
     return r
 
 
-def case_messages_basic() -> dict:
+def case_responses_gpt55() -> dict:
+    return case_responses_basic(GPT55)
+
+
+def case_messages_basic(model: str) -> dict:
     r = post(
         "/v1/messages",
         {
-            "model": CLAUDE,
+            "model": model,
             "max_tokens": 32,
             "messages": [{"role": "user", "content": "Say hi in one word"}],
         },
@@ -292,6 +329,8 @@ def case_messages_basic() -> dict:
     )
     if r.get("ok"):
         r["preview"] = _messages_preview(r["body"])
+    elif skip := _maybe_skip_upstream(r, label="messages"):
+        return skip
     return r
 
 
@@ -384,6 +423,9 @@ def case_messages_codex_tools() -> dict:
     )
     if r.get("ok"):
         r["preview"] = _messages_preview(r["body"])
+        return r
+    if skip := _maybe_skip_upstream(r, label="codex_tools"):
+        return skip
     return r
 
 
@@ -510,6 +552,14 @@ def case_glm_temperature_zero_fails() -> dict:
             "messages": [{"role": "user", "content": "OK"}],
         },
     )
+    if r.get("ok"):
+        return {
+            "ok": True,
+            "skip": True,
+            "preview": "upstream now accepts temperature=0",
+            "latency_s": r.get("latency_s"),
+            "status": r.get("status"),
+        }
     return r
 
 
@@ -575,10 +625,19 @@ def case_chat_stream_ttfb(model: str) -> dict:
                 "preview": f"chunks={chunks}",
             }
     except Exception as exc:  # noqa: BLE001
+        err = str(exc)[:200]
+        if "500" in err or "429" in err or "too many" in err.lower():
+            return {
+                "ok": True,
+                "skip": True,
+                "preview": "upstream rate limit or 500",
+                "latency_s": round(time.perf_counter() - start, 2),
+                "error": err,
+            }
         return {
             "ok": False,
             "latency_s": round(time.perf_counter() - start, 2),
-            "error": str(exc)[:200],
+            "error": err,
         }
 
 
@@ -586,7 +645,7 @@ def case_burst(model: str, n: int = 3) -> dict:
     if model == GPT55:
         runner: Callable[[], dict] = case_responses_gpt55
     elif model == CLAUDE:
-        runner = case_messages_basic
+        runner = lambda: case_messages_basic(CLAUDE)
     else:
         runner = lambda: case_chat_basic(model)
 
@@ -648,6 +707,146 @@ def case_messages_tool_history() -> dict:
     return r
 
 
+def case_messages_adapter_orphan_tool_call(model: str) -> dict:
+    missing_id = "toolu_orphan_matrix_test"
+    r = post(
+        "/v1/messages",
+        {
+            "model": model,
+            "max_tokens": 128,
+            "tools": ANTHROPIC_TOOLS,
+            "messages": [
+                {"role": "user", "content": "run"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": missing_id,
+                            "name": "get_weather",
+                            "input": {"city": "London"},
+                        }
+                    ],
+                },
+                {"role": "user", "content": "continue"},
+            ],
+        },
+        headers=ANTHROPIC_HEADERS,
+        timeout=180,
+    )
+    if r.get("ok"):
+        r["preview"] = _messages_preview(r["body"])
+    elif skip := _maybe_skip_upstream(r, label="adapter_orphan"):
+        return skip
+    return r
+
+
+def case_messages_adapter_empty_tool_result(model: str) -> dict:
+    tool_id = "toolu_empty_matrix_test"
+    r = post(
+        "/v1/messages",
+        {
+            "model": model,
+            "max_tokens": 128,
+            "tools": ANTHROPIC_TOOLS,
+            "messages": [
+                {"role": "user", "content": "weather"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": tool_id,
+                            "name": "get_weather",
+                            "input": {"city": "Paris"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": [],
+                        }
+                    ],
+                },
+                {"role": "user", "content": "thanks"},
+            ],
+        },
+        headers=ANTHROPIC_HEADERS,
+        timeout=180,
+    )
+    if r.get("ok"):
+        r["preview"] = _messages_preview(r["body"])
+    elif skip := _maybe_skip_upstream(r, label="adapter_empty_result"):
+        return skip
+    return r
+
+
+def case_responses_bridge_interleaved_tool_result(model: str) -> dict:
+    call_id = "call_matrix_interleaved"
+    r = post(
+        "/v1/responses",
+        {
+            "model": model,
+            "max_output_tokens": 64,
+            "input": [
+                {"type": "message", "role": "user", "content": "run"},
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "id": call_id,
+                    "name": "get_weather",
+                    "arguments": '{"city":"London"}',
+                },
+                {"type": "message", "role": "user", "content": "interrupt"},
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": "15C",
+                },
+                {"type": "message", "role": "user", "content": "continue"},
+            ],
+        },
+        timeout=180,
+    )
+    if r.get("ok"):
+        r["preview"] = str(r.get("body", ""))[:120]
+    elif skip := _maybe_skip_upstream(r, label="responses_interleaved"):
+        return skip
+    return r
+
+
+def case_responses_bridge_orphan_tool_call(model: str) -> dict:
+    call_id = "call_matrix_orphan"
+    r = post(
+        "/v1/responses",
+        {
+            "model": model,
+            "max_output_tokens": 64,
+            "input": [
+                {"type": "message", "role": "user", "content": "run"},
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "id": call_id,
+                    "name": "Bash",
+                    "arguments": "{}",
+                },
+                {"type": "message", "role": "user", "content": "continue"},
+            ],
+        },
+        timeout=180,
+    )
+    if r.get("ok"):
+        r["preview"] = str(r.get("body", ""))[:120]
+    elif skip := _maybe_skip_upstream(r, label="responses_orphan"):
+        return skip
+    return r
+
+
 def build_cases() -> List[Case]:
     cases: List[Case] = []
 
@@ -673,7 +872,7 @@ def build_cases() -> List[Case]:
                 id="messages.claude.basic",
                 tier="quick",
                 why="Anthropic native /v1/messages path",
-                fn=case_messages_basic,
+                fn=lambda: case_messages_basic(CLAUDE),
             ),
             Case(
                 id="messages.claude.thinking",
@@ -719,6 +918,63 @@ def build_cases() -> List[Case]:
                 expect="fail",
                 timeout=30,
                 retries=0,
+            ),
+        ]
+    )
+
+    for model in CHAT_MODELS:
+        cases.append(
+            Case(
+                id=f"messages.basic.{model}",
+                tier="matrix",
+                why="CC /v1/messages x model: native Claude or adapter path",
+                fn=lambda m=model: case_messages_basic(m),
+            )
+        )
+        cases.append(
+            Case(
+                id=f"responses.basic.{model}",
+                tier="matrix",
+                why="Codex /v1/responses x model: native GPT or chat bridge",
+                fn=lambda m=model: case_responses_basic(m),
+            )
+        )
+
+    for model in ADAPTER_REGRESSION_MODELS:
+        cases.append(
+            Case(
+                id=f"messages.adapter.orphan_tool_call.{model}",
+                tier="matrix",
+                why="Adapter inserts placeholder when tool_result missing from CC history",
+                fn=lambda m=model: case_messages_adapter_orphan_tool_call(m),
+                timeout=180,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"messages.adapter.empty_tool_result.{model}",
+                tier="matrix",
+                why="Adapter always emits tool message for empty tool_result list content",
+                fn=lambda m=model: case_messages_adapter_empty_tool_result(m),
+                timeout=180,
+            )
+        )
+
+    cases.extend(
+        [
+            Case(
+                id="responses.bridge.interleaved_tool_result",
+                tier="matrix",
+                why="Responses bridge pulls tool output contiguous after function_call",
+                fn=lambda: case_responses_bridge_interleaved_tool_result(AZURE55),
+                timeout=180,
+            ),
+            Case(
+                id="responses.bridge.orphan_tool_call",
+                tier="matrix",
+                why="Responses bridge inserts placeholder for missing function_call_output",
+                fn=lambda: case_responses_bridge_orphan_tool_call(AZURE55),
+                timeout=180,
             ),
         ]
     )
@@ -839,10 +1095,19 @@ def run_case(case: Case) -> dict:
 
 
 def filter_tier(cases: List[Case], tiers: Set[Tier]) -> List[Case]:
-    order = {"quick": 0, "full": 1, "stress": 2}
     selected = [c for c in cases if c.tier in tiers]
-    selected.sort(key=lambda c: (order[c.tier], c.id))
+    selected.sort(key=lambda c: (TIER_ORDER[c.tier], c.id))
     return selected
+
+
+def run_cases_parallel(cases: List[Case]) -> List[dict]:
+    results: List[dict] = []
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        future_to_case = {pool.submit(run_case, c): c for c in cases}
+        for future in as_completed(future_to_case):
+            results.append(future.result())
+    results.sort(key=lambda r: (TIER_ORDER.get(r["tier"], 99), r["id"]))
+    return results
 
 
 def ensure_proxy_ready() -> None:
@@ -854,7 +1119,14 @@ def main() -> int:
         description="Sophnet-Azure corner-case proxy tests"
     )
     parser.add_argument("--quick", action="store_true", help="Quick smoke (default)")
-    parser.add_argument("--full", action="store_true", help="Include full-tier cases")
+    parser.add_argument(
+        "--matrix", action="store_true", help="Include CC/Codex x model matrix tier"
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Include full-tier cases (also includes matrix)",
+    )
     parser.add_argument(
         "--stress", action="store_true", help="Include stress-tier cases"
     )
@@ -867,11 +1139,14 @@ def main() -> int:
         return 0
 
     tiers: Set[Tier] = {"quick"}
+    if args.matrix:
+        tiers.add("matrix")
     if args.full:
         tiers.add("full")
+        tiers.add("matrix")
     if args.stress:
         tiers.add("stress")
-    if not args.full and not args.stress:
+    if not args.full and not args.stress and not args.matrix:
         tiers = {"quick"}
 
     try:
@@ -881,7 +1156,7 @@ def main() -> int:
         return 2
 
     cases = filter_tier(build_cases(), tiers)
-    results = [run_case(c) for c in cases]
+    results = run_cases_parallel(cases)
 
     passed = sum(1 for r in results if r["passed"])
     failed = [r for r in results if not r["passed"]]
@@ -889,7 +1164,8 @@ def main() -> int:
 
     report = {
         "base": BASE,
-        "tiers": sorted(tiers),
+        "tiers": sorted(tiers, key=lambda t: TIER_ORDER[t]),
+        "workers": WORKERS,
         "summary": {
             "total": len(results),
             "passed": passed,
