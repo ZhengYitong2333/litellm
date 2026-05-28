@@ -52,7 +52,9 @@ AZURE = "azure-gpt-5.4"
 AZURE55 = "azure-gpt-5.5"
 DEEPSEEK_PRO = "deepseek-v4-pro"
 
-ADAPTER_REGRESSION_MODELS = [AZURE55, GLM]
+# azure-gpt-5.5 + GLM exercise the adapter -> chat path; deepseek-v4-pro exercises
+# the native Anthropic passthrough path (api.deepseek.com/anthropic/v1/messages).
+ADAPTER_REGRESSION_MODELS = [AZURE55, GLM, DEEPSEEK_PRO]
 
 ANTHROPIC_HEADERS = {"anthropic-version": "2023-06-01"}
 
