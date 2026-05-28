@@ -877,6 +877,43 @@ class TestFunctionCallTransformation:
 
         assert "reasoning_effort" not in completion_args
 
+    def test_top_level_system_is_not_forwarded_to_chat_completions(self):
+        """Anthropic-style system kwarg should become a chat system message."""
+        completion_args = {
+            "system": "You are concise.",
+            "messages": [{"role": "user", "content": "Reply OK"}],
+        }
+
+        LiteLLMCompletionTransformationHandler._normalize_top_level_system_arg(
+            completion_args
+        )
+
+        assert "system" not in completion_args
+        assert completion_args["messages"] == [
+            {"role": "system", "content": "You are concise."},
+            {"role": "user", "content": "Reply OK"},
+        ]
+
+    def test_top_level_system_is_dropped_when_system_message_exists(self):
+        """Avoid duplicating system prompts already produced from Responses instructions."""
+        completion_args = {
+            "system": "Duplicate system prompt",
+            "messages": [
+                {"role": "system", "content": "Existing system prompt"},
+                {"role": "user", "content": "Reply OK"},
+            ],
+        }
+
+        LiteLLMCompletionTransformationHandler._normalize_top_level_system_arg(
+            completion_args
+        )
+
+        assert "system" not in completion_args
+        assert completion_args["messages"] == [
+            {"role": "system", "content": "Existing system prompt"},
+            {"role": "user", "content": "Reply OK"},
+        ]
+
     def test_function_call_without_call_id_fallback_to_id(self):
         """Test that function_call items can use 'id' field when 'call_id' is missing"""
         function_call_item = {

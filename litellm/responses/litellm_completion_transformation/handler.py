@@ -22,6 +22,43 @@ from litellm.types.utils import ModelResponse
 
 class LiteLLMCompletionTransformationHandler:
     @staticmethod
+    def _normalize_top_level_system_arg(completion_args: Dict[str, Any]) -> None:
+        """
+        Chat Completions does not accept a top-level `system` kwarg. Preserve it
+        as a system message when the Responses adapter did not already do so.
+        """
+        system = completion_args.pop("system", None)
+        if not system:
+            return
+
+        messages = completion_args.get("messages")
+        if not isinstance(messages, list):
+            return
+
+        if any(
+            isinstance(message, dict) and message.get("role") == "system"
+            for message in messages
+        ):
+            return
+
+        if isinstance(system, str):
+            system_content: Any = system
+        elif isinstance(system, list):
+            system_content = [
+                block
+                for block in system
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+        else:
+            return
+
+        if system_content:
+            completion_args["messages"] = [
+                {"role": "system", "content": system_content},
+                *messages,
+            ]
+
+    @staticmethod
     def _drop_azure_reasoning_effort_when_tools_present(
         completion_args: Dict[str, Any],
     ) -> None:
@@ -88,6 +125,7 @@ class LiteLLMCompletionTransformationHandler:
         completion_args.pop("client_metadata", None)
         completion_args.pop("output_config", None)
         completion_args.pop("acompletion", None)
+        self._normalize_top_level_system_arg(completion_args)
         self._drop_azure_reasoning_effort_when_tools_present(completion_args)
 
         litellm_completion_response: Union[
@@ -147,6 +185,7 @@ class LiteLLMCompletionTransformationHandler:
         # Router/aresponses may pass routing flags; must not reach litellm.acompletion().
         for _routing_key in ("acompletion", "aresponses", "responses"):
             acompletion_args.pop(_routing_key, None)
+        self._normalize_top_level_system_arg(acompletion_args)
         self._drop_azure_reasoning_effort_when_tools_present(acompletion_args)
 
         litellm_completion_response: Union[
