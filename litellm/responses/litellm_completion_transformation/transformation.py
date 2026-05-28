@@ -1088,22 +1088,40 @@ class LiteLLMCompletionResponsesConfig:
                         found_tool_call_ids.add(str(tool_call_id_raw))
                 block_end += 1
 
+            # OpenAI-compatible providers require the tool results to IMMEDIATELY
+            # follow the assistant tool_calls. If non-tool messages (e.g. a user
+            # "continue"/"interrupt" turn) were interleaved before the tool
+            # results, pull the tool results up so they stay contiguous with the
+            # assistant turn — otherwise the provider rejects the request even
+            # though every call_id technically has a result later in the block.
+            block_start = i + 1
+            block = fixed_messages[block_start:block_end]
+            block_tool_messages = [
+                m
+                for m in block
+                if (m.get("role") if isinstance(m, dict) else getattr(m, "role", None))
+                in ("tool", "function")
+            ]
+            block_other_messages = [
+                m
+                for m in block
+                if (m.get("role") if isinstance(m, dict) else getattr(m, "role", None))
+                not in ("tool", "function")
+            ]
+            if block_tool_messages and block_other_messages:
+                fixed_messages[block_start:block_end] = (
+                    block_tool_messages + block_other_messages
+                )
+
             missing_tool_call_ids = expected_tool_call_ids - found_tool_call_ids
             if not missing_tool_call_ids:
-                i += 1
+                # Nothing missing; skip past this block (tool results were either
+                # already contiguous or pulled up above).
+                i = block_end
                 continue
 
-            insert_at = i + 1
-            while insert_at < block_end:
-                mid_role = (
-                    fixed_messages[insert_at].get("role")
-                    if isinstance(fixed_messages[insert_at], dict)
-                    else getattr(fixed_messages[insert_at], "role", None)
-                )
-                if mid_role in ("tool", "function"):
-                    insert_at += 1
-                else:
-                    break
+            # Tool results are now contiguous right after the assistant.
+            insert_at = block_start + len(block_tool_messages)
 
             placeholder_messages: List[ChatCompletionToolMessage] = []
             for tool_call_id in missing_tool_call_ids:

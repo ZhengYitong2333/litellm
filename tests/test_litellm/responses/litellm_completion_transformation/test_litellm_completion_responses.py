@@ -1551,6 +1551,79 @@ class TestToolTransformation:
         # OpenAI-compatible providers to reject the request.
         assert len(result_tools) == 0
 
+    def test_tool_results_pulled_contiguous_after_assistant_tool_calls(self):
+        """
+        OpenAI/Azure reject when a non-tool message is interleaved between an
+        assistant tool_calls turn and its tool result. The tool result must be
+        pulled up so it immediately follows the assistant turn.
+
+        Regression for: "An assistant message with 'tool_calls' must be followed
+        by tool messages responding to each 'tool_call_id'".
+        """
+        messages = [
+            {"role": "user", "content": "run"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_gap1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "user", "content": "interrupt"},
+            {"role": "tool", "tool_call_id": "call_gap1", "content": "done"},
+            {"role": "user", "content": "continue"},
+        ]
+
+        fixed = LiteLLMCompletionResponsesConfig._ensure_assistant_tool_calls_have_tool_results(
+            messages=messages
+        )
+
+        roles = [m["role"] for m in fixed]
+        assistant_idx = roles.index("assistant")
+        # The tool result must immediately follow the assistant tool_calls turn.
+        assert fixed[assistant_idx + 1]["role"] == "tool"
+        assert fixed[assistant_idx + 1]["tool_call_id"] == "call_gap1"
+        # No duplicate/extra tool messages were created for the same id.
+        tool_ids = [m["tool_call_id"] for m in fixed if m["role"] == "tool"]
+        assert tool_ids == ["call_gap1"]
+        # The interleaved user messages are preserved (moved after the result).
+        assert sum(1 for m in fixed if m["role"] == "user") == 3
+
+    def test_missing_tool_result_placeholder_with_interleaved_user(self):
+        """
+        When the tool result is entirely missing (only an interleaved user turn
+        follows), a placeholder tool message is inserted immediately after the
+        assistant tool_calls turn.
+        """
+        messages = [
+            {"role": "user", "content": "run"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_missing",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "user", "content": "continue"},
+        ]
+
+        fixed = LiteLLMCompletionResponsesConfig._ensure_assistant_tool_calls_have_tool_results(
+            messages=messages
+        )
+
+        roles = [m["role"] for m in fixed]
+        assistant_idx = roles.index("assistant")
+        assert fixed[assistant_idx + 1]["role"] == "tool"
+        assert fixed[assistant_idx + 1]["tool_call_id"] == "call_missing"
+
 
 class TestUsageTransformation:
     """Test cases for usage transformation from Chat Completion to Responses API format"""
