@@ -927,14 +927,113 @@ def sanitize_anthropic_messages_for_upstream(
       (e.g. Sophnet) that cannot round-trip encrypted thinking payloads
     - Drops ``thinking`` history blocks for third-party gateways (e.g. Sophnet) where
       signatures are not portable; preserves them for DeepSeek's Anthropic Messages API
+    - Inserts placeholder ``tool_result`` blocks for orphaned ``tool_use`` turns so
+      Anthropic-compatible endpoints do not 400 on Claude Code history that drops them
     """
     messages = strip_empty_text_blocks_from_anthropic_messages(messages)
+    messages = insert_missing_tool_result_blocks_for_anthropic_messages(messages)
     if _is_official_anthropic_api_base(api_base):
         return messages
     messages = strip_redacted_thinking_blocks_from_anthropic_messages(messages)
     if not _is_deepseek_api_base(api_base):
         messages = strip_thinking_blocks_from_anthropic_messages(messages)
     return messages
+
+
+def _collect_tool_use_ids(content: Any) -> List[str]:
+    """Return ``tool_use`` block ids in an Anthropic message ``content`` list."""
+    if not isinstance(content, list):
+        return []
+    return [
+        block["id"]
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "tool_use"
+        and isinstance(block.get("id"), str)
+        and block.get("id")
+    ]
+
+
+def _collect_tool_result_ids(content: Any) -> set:
+    """Return ``tool_result`` block ``tool_use_id``s in a message ``content`` list."""
+    if not isinstance(content, list):
+        return set()
+    return {
+        block["tool_use_id"]
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "tool_result"
+        and isinstance(block.get("tool_use_id"), str)
+    }
+
+
+def insert_missing_tool_result_blocks_for_anthropic_messages(
+    messages: List[Any],
+) -> List[Any]:
+    """
+    Ensure every assistant ``tool_use`` block is answered by a ``tool_result`` block
+    in the immediately following user turn.
+
+    Claude Code history sometimes replays an assistant turn that made tool calls but
+    omits the matching ``tool_result`` (the next user turn is plain text like
+    "continue"). Anthropic-compatible endpoints (e.g. DeepSeek's ``/anthropic/v1/messages``)
+    reject this with "tool_use ids were found without tool_result blocks immediately
+    after". For any orphaned ``tool_use`` id we add a placeholder ``tool_result`` block.
+
+    The chat/completions path already handles this via
+    ``LiteLLMAnthropicMessagesAdapter._insert_missing_tool_result_placeholders``; this
+    helper provides the equivalent guarantee for the native Anthropic Messages path.
+
+    The caller's list and message dicts are never mutated; modified turns are returned
+    as shallow copies with a fresh content list.
+    """
+    out: List[Any] = []
+    index = 0
+    total = len(messages)
+    while index < total:
+        message = messages[index]
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            out.append(message)
+            index += 1
+            continue
+
+        tool_use_ids = _collect_tool_use_ids(message.get("content"))
+        if not tool_use_ids:
+            out.append(message)
+            index += 1
+            continue
+
+        out.append(message)
+        next_message = messages[index + 1] if index + 1 < total else None
+        next_is_user = (
+            isinstance(next_message, dict) and next_message.get("role") == "user"
+        )
+        answered = (
+            _collect_tool_result_ids(next_message.get("content"))
+            if next_is_user
+            else set()
+        )
+        missing = [tid for tid in tool_use_ids if tid not in answered]
+
+        if not missing:
+            out.append(next_message)
+            index += 2
+            continue
+
+        placeholders = [
+            {"type": "tool_result", "tool_use_id": tid, "content": ""}
+            for tid in missing
+        ]
+        if next_is_user and isinstance(next_message.get("content"), list):
+            # Anthropic requires tool_result blocks at the start of the user turn.
+            out.append(
+                {**next_message, "content": placeholders + next_message["content"]}
+            )
+            index += 2
+        else:
+            out.append({"role": "user", "content": placeholders})
+            index += 1
+    return out
 
 
 def strip_thinking_blocks_from_anthropic_messages(messages: List[Any]) -> List[Any]:

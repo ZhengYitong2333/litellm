@@ -1405,6 +1405,125 @@ class TestAnthropicThinkingSignatureSelfHeal:
         assert [b["type"] for b in out[0]["content"]] == ["thinking", "text"]
         assert out[0]["content"][0]["thinking"] == "plan tool call"
 
+    def test_insert_missing_tool_result_inserts_user_turn_when_missing(self):
+        from litellm.llms.anthropic.common_utils import (
+            insert_missing_tool_result_blocks_for_anthropic_messages,
+        )
+
+        msgs = [
+            {"role": "user", "content": "run"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_orphan",
+                        "name": "Bash",
+                        "input": {"command": "ls"},
+                    }
+                ],
+            },
+            {"role": "user", "content": "continue"},
+        ]
+
+        out = insert_missing_tool_result_blocks_for_anthropic_messages(msgs)
+
+        # A user turn with a placeholder tool_result is inserted immediately after
+        # the assistant tool_use turn.
+        assert out[2]["role"] == "user"
+        assert out[2]["content"][0]["type"] == "tool_result"
+        assert out[2]["content"][0]["tool_use_id"] == "toolu_orphan"
+        # The original "continue" turn is preserved after the placeholder.
+        assert out[3]["content"] == "continue"
+
+    def test_insert_missing_tool_result_prepends_to_partial_user_turn(self):
+        from litellm.llms.anthropic.common_utils import (
+            insert_missing_tool_result_blocks_for_anthropic_messages,
+        )
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "toolu_a", "name": "x", "input": {}},
+                    {"type": "tool_use", "id": "toolu_b", "name": "y", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_a",
+                        "content": "done",
+                    }
+                ],
+            },
+        ]
+
+        out = insert_missing_tool_result_blocks_for_anthropic_messages(msgs)
+
+        # No extra user turn; the missing id is prepended to the existing user turn.
+        assert len(out) == 2
+        result_ids = [
+            b["tool_use_id"]
+            for b in out[1]["content"]
+            if b.get("type") == "tool_result"
+        ]
+        assert result_ids == ["toolu_b", "toolu_a"]
+
+    def test_insert_missing_tool_result_noop_when_all_answered(self):
+        from litellm.llms.anthropic.common_utils import (
+            insert_missing_tool_result_blocks_for_anthropic_messages,
+        )
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "toolu_a", "name": "x", "input": {}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_a",
+                        "content": "done",
+                    }
+                ],
+            },
+        ]
+
+        out = insert_missing_tool_result_blocks_for_anthropic_messages(msgs)
+
+        assert len(out) == 2
+        assert out == msgs
+
+    def test_sanitize_anthropic_messages_inserts_placeholder_for_deepseek(self):
+        from litellm.llms.anthropic.common_utils import (
+            sanitize_anthropic_messages_for_upstream,
+        )
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "toolu_x", "name": "Bash", "input": {}}
+                ],
+            },
+            {"role": "user", "content": "continue"},
+        ]
+        out = sanitize_anthropic_messages_for_upstream(
+            msgs,
+            api_base="https://api.deepseek.com/anthropic",
+        )
+        # Placeholder tool_result inserted so DeepSeek's Anthropic endpoint accepts it.
+        assert out[1]["role"] == "user"
+        assert out[1]["content"][0]["type"] == "tool_result"
+        assert out[1]["content"][0]["tool_use_id"] == "toolu_x"
+
     def test_sanitize_anthropic_tools_for_sophnet_drops_computer_and_shell(self):
         from litellm.llms.anthropic.common_utils import (
             sanitize_anthropic_tools_for_upstream,
