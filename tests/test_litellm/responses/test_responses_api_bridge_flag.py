@@ -15,11 +15,35 @@ sys.path.insert(
 )  # Adds the parent directory to the system path
 
 import litellm
+from litellm.responses.main import _should_force_responses_to_chat_bridge
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 
 
 class TestUseResponsesApiBridgeFlag:
     """Test that bridge opt-in forces the chat completions path."""
+
+    def test_minimax_api_bases_force_chat_bridge(self):
+        """MiniMax domains do not support Codex's OpenAI Responses payload directly."""
+        for api_base in (
+            "https://api.minimax.chat/v1",
+            "https://api.minimax.io/v1",
+            "https://api.minimaxi.com/v1",
+        ):
+            assert _should_force_responses_to_chat_bridge(
+                api_base=api_base, model="minimax/MiniMax-M3"
+            )
+
+    def test_sophnet_gpt55_can_use_native_responses(self):
+        assert not _should_force_responses_to_chat_bridge(
+            api_base="https://www.sophnet.com/api/open-apis/v1",
+            model="openai/gpt-5.5",
+        )
+
+    def test_sophnet_non_gpt55_forces_chat_bridge(self):
+        assert _should_force_responses_to_chat_bridge(
+            api_base="https://www.sophnet.com/api/open-apis/v1",
+            model="custom_openai/GLM-5.1",
+        )
 
     @patch(
         "litellm.responses.main.litellm_completion_transformation_handler.response_api_handler"
@@ -151,9 +175,7 @@ class TestUseResponsesApiBridgeFlag:
             output=[
                 {"type": "message", "content": [{"type": "text", "text": "Answer"}]}
             ],
-            usage=ResponseAPIUsage(
-                input_tokens=10, output_tokens=5, total_tokens=15
-            ),
+            usage=ResponseAPIUsage(input_tokens=10, output_tokens=5, total_tokens=15),
         )
         mock_call_aresponses.return_value = mock_response
 
@@ -202,9 +224,7 @@ class TestUseResponsesApiBridgeFlag:
                     "arguments": '{"queries": ["test query"]}',
                 }
             ],
-            usage=ResponseAPIUsage(
-                input_tokens=10, output_tokens=5, total_tokens=15
-            ),
+            usage=ResponseAPIUsage(input_tokens=10, output_tokens=5, total_tokens=15),
         )
         second_response = ResponsesAPIResponse(
             id="resp_second",
@@ -216,9 +236,7 @@ class TestUseResponsesApiBridgeFlag:
                     "content": [{"type": "text", "text": "Final answer"}],
                 }
             ],
-            usage=ResponseAPIUsage(
-                input_tokens=20, output_tokens=10, total_tokens=30
-            ),
+            usage=ResponseAPIUsage(input_tokens=20, output_tokens=10, total_tokens=30),
         )
         mock_bridge_handler.side_effect = [first_response, second_response]
 
@@ -267,9 +285,7 @@ class TestUseResponsesApiBridgeFlag:
                     "content": [{"type": "text", "text": "Native response"}],
                 }
             ],
-            usage=ResponseAPIUsage(
-                input_tokens=10, output_tokens=5, total_tokens=15
-            ),
+            usage=ResponseAPIUsage(input_tokens=10, output_tokens=5, total_tokens=15),
         )
 
         result = await litellm.aresponses(

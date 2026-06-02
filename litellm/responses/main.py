@@ -671,6 +671,31 @@ def _supports_sophnet_native_responses_api(model: str) -> bool:
     return "gpt-5.5" in model.lower()
 
 
+def _should_force_responses_to_chat_bridge(api_base: str, model: str) -> bool:
+    """
+    Codex /v1/responses: route through chat-completions bridge for providers
+    whose native Responses API rejects Codex payloads or is not OpenAI-compatible.
+    """
+    normalized_api_base = api_base.lower()
+    minimax_hosts = (
+        "minimax.chat",
+        "minimax.io",
+        "minimaxi.com",
+    )
+    azure_hosts = (
+        "ai.azure.com",
+        "openai.azure.com",
+        "services.ai.azure.com",
+    )
+    if any(host in normalized_api_base for host in minimax_hosts):
+        return True
+    if any(host in normalized_api_base for host in azure_hosts):
+        return True
+    if "sophnet.com" in normalized_api_base:
+        return not _supports_sophnet_native_responses_api(model=model)
+    return False
+
+
 def _resolve_model_provider_for_responses(
     model: str,
     custom_llm_provider: Optional[str],
@@ -979,24 +1004,8 @@ def responses(
         use_chat_completions_api = (
             use_chat_completions_api or _from_chat_completions_prefix
         )
-        _api_base = str(litellm_params.api_base or kwargs.get("api_base") or "").lower()
-        # Codex /v1/responses: route through chat-completions bridge for providers
-        # whose native Responses API rejects Codex payloads (Sophnet, MiniMax, Azure).
-        if (
-            "minimaxi.com" in _api_base
-            or any(
-                host in _api_base
-                for host in (
-                    "ai.azure.com",
-                    "openai.azure.com",
-                    "services.ai.azure.com",
-                )
-            )
-            or (
-                "sophnet.com" in _api_base
-                and not _supports_sophnet_native_responses_api(model=model)
-            )
-        ):
+        _api_base = str(litellm_params.api_base or kwargs.get("api_base") or "")
+        if _should_force_responses_to_chat_bridge(api_base=_api_base, model=model):
             use_chat_completions_api = True
 
         model, custom_llm_provider = _resolve_model_provider_for_responses(
