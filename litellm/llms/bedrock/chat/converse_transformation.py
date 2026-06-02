@@ -1416,25 +1416,9 @@ class AmazonConverseConfig(BaseConfig):
         # Append pre-formatted tools (systemTool etc.) after transformation
         bedrock_tools.extend(pre_formatted_tools)
 
-        # Opus 4.5 gates ``output_config.effort`` behind a beta header;
-        # Claude 4.6/4.7 accept it without one.
-        base_model = BedrockModelInfo.get_base_model(model)
-        if base_model.startswith("anthropic"):
-            output_config = additional_request_params.get("output_config")
-            if (
-                isinstance(output_config, dict)
-                and output_config.get("effort") is not None
-                and not AnthropicConfig._is_adaptive_thinking_model(model)
-            ):
-                from litellm.types.llms.anthropic import (
-                    ANTHROPIC_EFFORT_BETA_HEADER,
-                )
-
-                if ANTHROPIC_EFFORT_BETA_HEADER not in anthropic_beta_list:
-                    anthropic_beta_list.append(ANTHROPIC_EFFORT_BETA_HEADER)
-
         # Filter out betas the Bedrock Converse API rejects.
         # Source of truth: anthropic_beta_headers_config.json (bedrock_converse).
+        base_model = BedrockModelInfo.get_base_model(model)
         if anthropic_beta_list:
             unsupported = self._get_unsupported_bedrock_converse_betas()
             anthropic_beta_list = [b for b in anthropic_beta_list if b not in unsupported]

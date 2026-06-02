@@ -544,3 +544,33 @@ class TestAnthropicBetaHeaderSupport:
         ]:
             assert blocked not in betas, f"{blocked!r} should be filtered out"
         assert "context-1m-2025-08-07" in betas
+
+    def test_converse_does_not_auto_append_effort_beta(self):
+        """Converse API rejects effort-2025-11-24 in anthropic_beta.
+
+        Effort should travel via outputConfig.effort, not the beta header.
+        Setting output_config.effort on a non-adaptive model (opus-4-5) must
+        NOT cause the converse path to append effort-2025-11-24 to
+        anthropic_beta — the JSON filter is defense-in-depth; the cleaner
+        design is to skip the auto-append for the converse path entirely.
+        """
+        config = AmazonConverseConfig()
+        result = config._transform_request_helper(
+            model="anthropic.claude-opus-4-5-20251101-v1:0",
+            system_content_blocks=[],
+            optional_params={"output_config": {"effort": "low"}},
+            messages=[{"role": "user", "content": "Test"}],
+        )
+
+        additional_fields = result.get("additionalModelRequestFields", {})
+        # output_config still goes through (it carries the effort value)
+        assert additional_fields.get("output_config") == {"effort": "low"}, (
+            f"output_config.effort must be preserved on the converse path; "
+            f"got {additional_fields!r}"
+        )
+        # And anthropic_beta must NOT include effort-2025-11-24
+        betas = additional_fields.get("anthropic_beta", []) or []
+        assert "effort-2025-11-24" not in betas, (
+            f"Converse must not include effort-2025-11-24 in anthropic_beta; "
+            f"got {betas!r}"
+        )
