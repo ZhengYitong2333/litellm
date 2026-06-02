@@ -93,6 +93,7 @@ UNSUPPORTED_BEDROCK_CONVERSE_BETA_PATTERNS = [
     "advanced-tool-use",  # Bedrock Converse doesn't support advanced-tool-use beta headers
     "prompt-caching",  # Prompt caching not supported in Converse API
     "compact-2026-01-12",  # The compact beta feature is not currently supported on the Converse and ConverseStream APIs
+    "effort-2025-11-24",  # Converse API uses outputConfig.effort, not anthropic_beta; passing this causes "invalid beta flag"
 ]
 
 
@@ -1429,6 +1430,17 @@ class AmazonConverseConfig(BaseConfig):
 
                 if ANTHROPIC_EFFORT_BETA_HEADER not in anthropic_beta_list:
                     anthropic_beta_list.append(ANTHROPIC_EFFORT_BETA_HEADER)
+
+        # Filter out unsupported beta patterns for Bedrock Converse API
+        if anthropic_beta_list:
+            anthropic_beta_list = [
+                b
+                for b in anthropic_beta_list
+                if not any(
+                    unsupported in b
+                    for unsupported in UNSUPPORTED_BEDROCK_CONVERSE_BETA_PATTERNS
+                )
+            ]
 
         # Set anthropic_beta in additional_request_params if we have any beta features
         # ONLY apply to Anthropic/Claude models - other models (e.g., Qwen, Llama) don't support this field

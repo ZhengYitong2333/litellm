@@ -401,3 +401,69 @@ class TestAnthropicBetaHeaderSupport:
             "anthropic_beta" in additional_fields
         ), "anthropic_beta SHOULD be added for Anthropic models with cross-region prefix."
         assert "context-1m-2025-08-07" in additional_fields["anthropic_beta"]
+
+    def test_converse_filters_unsupported_beta_patterns(self):
+        """Test that unsupported beta patterns are filtered out for Bedrock Converse API."""
+        config = AmazonConverseConfig()
+        # Pass headers with unsupported beta patterns
+        headers = {
+            "anthropic-beta": "advanced-tool-use-2025-11-20,prompt-caching-2024-07-31,compact-2026-01-12,effort-2025-11-24,context-1m-2025-08-07"
+        }
+
+        result = config._transform_request_helper(
+            model="anthropic.claude-haiku-4-5-20251001-v1:0",
+            system_content_blocks=[],
+            optional_params={},
+            messages=[{"role": "user", "content": "Test"}],
+            headers=headers,
+        )
+
+        additional_fields = result.get("additionalModelRequestFields", {})
+        if "anthropic_beta" in additional_fields:
+            betas = additional_fields["anthropic_beta"]
+            # These should be filtered out
+            assert "advanced-tool-use-2025-11-20" not in betas
+            assert "prompt-caching-2024-07-31" not in betas
+            assert "compact-2026-01-12" not in betas
+            assert "effort-2025-11-24" not in betas
+            # This should remain
+            assert "context-1m-2025-08-07" in betas
+
+    def test_converse_effort_beta_not_in_additional_model_request_fields(self):
+        """Test that effort beta header is filtered out in Converse API transformation.
+
+        The Converse API handles effort via outputConfig, not anthropic_beta.
+        Passing effort-2025-11-24 in anthropic_beta causes 'invalid beta flag' errors.
+        """
+        config = AmazonConverseConfig()
+        headers = {"anthropic-beta": "effort-2025-11-24"}
+
+        result = config._transform_request_helper(
+            model="anthropic.claude-opus-4-5-20250609-v1:0",
+            system_content_blocks=[],
+            optional_params={},
+            messages=[{"role": "user", "content": "Test"}],
+            headers=headers,
+        )
+
+        additional_fields = result.get("additionalModelRequestFields", {})
+        # effort-2025-11-24 should be filtered out
+        if "anthropic_beta" in additional_fields:
+            assert "effort-2025-11-24" not in additional_fields["anthropic_beta"]
+
+    def test_converse_all_unsupported_betas_removed_leaves_empty_list(self):
+        """Test that when all beta headers are unsupported, anthropic_beta is not set."""
+        config = AmazonConverseConfig()
+        # Only unsupported patterns
+        headers = {"anthropic-beta": "advanced-tool-use-2025-11-20,compact-2026-01-12"}
+
+        result = config._transform_request_helper(
+            model="anthropic.claude-haiku-4-5-20251001-v1:0",
+            system_content_blocks=[],
+            optional_params={},
+            messages=[{"role": "user", "content": "Test"}],
+            headers=headers,
+        )
+
+        additional_fields = result.get("additionalModelRequestFields", {})
+        assert "anthropic_beta" not in additional_fields
