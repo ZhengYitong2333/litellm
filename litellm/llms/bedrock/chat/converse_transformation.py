@@ -71,6 +71,8 @@ from litellm.utils import (
     token_counter,
 )
 
+from litellm.anthropic_beta_headers_manager import get_unsupported_headers
+
 from ..common_utils import (
     BedrockError,
     BedrockModelInfo,
@@ -86,16 +88,6 @@ BEDROCK_COMPUTER_USE_TOOLS = [
     "bash_",
     "text_editor_",
 ]
-
-# Beta header patterns that are not supported by Bedrock Converse API
-# These will be filtered out to prevent errors
-UNSUPPORTED_BEDROCK_CONVERSE_BETA_PATTERNS = [
-    "advanced-tool-use",  # Bedrock Converse doesn't support advanced-tool-use beta headers
-    "prompt-caching",  # Prompt caching not supported in Converse API
-    "compact-2026-01-12",  # The compact beta feature is not currently supported on the Converse and ConverseStream APIs
-    "effort-2025-11-24",  # Converse API uses outputConfig.effort, not anthropic_beta; passing this causes "invalid beta flag"
-]
-
 
 class AmazonConverseConfig(BaseConfig):
     """
@@ -1298,6 +1290,16 @@ class AmazonConverseConfig(BaseConfig):
             output_config,
         )
 
+    @staticmethod
+    def _get_unsupported_bedrock_converse_betas() -> set:
+        """Return the set of beta header names that Bedrock Converse API rejects.
+
+        Source of truth: the "bedrock_converse" provider in
+        litellm/anthropic_beta_headers_config.json (entries with null value).
+        The underlying helper is cached, so this is cheap to call per request.
+        """
+        return set(get_unsupported_headers("bedrock_converse"))
+
     def _process_tools_and_beta(
         self,
         original_tools: list,
@@ -1431,16 +1433,11 @@ class AmazonConverseConfig(BaseConfig):
                 if ANTHROPIC_EFFORT_BETA_HEADER not in anthropic_beta_list:
                     anthropic_beta_list.append(ANTHROPIC_EFFORT_BETA_HEADER)
 
-        # Filter out unsupported beta patterns for Bedrock Converse API
+        # Filter out betas the Bedrock Converse API rejects.
+        # Source of truth: anthropic_beta_headers_config.json (bedrock_converse).
         if anthropic_beta_list:
-            anthropic_beta_list = [
-                b
-                for b in anthropic_beta_list
-                if not any(
-                    unsupported in b
-                    for unsupported in UNSUPPORTED_BEDROCK_CONVERSE_BETA_PATTERNS
-                )
-            ]
+            unsupported = self._get_unsupported_bedrock_converse_betas()
+            anthropic_beta_list = [b for b in anthropic_beta_list if b not in unsupported]
 
         # Set anthropic_beta in additional_request_params if we have any beta features
         # ONLY apply to Anthropic/Claude models - other models (e.g., Qwen, Llama) don't support this field

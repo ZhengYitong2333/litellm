@@ -70,7 +70,12 @@ class TestAnthropicBetaHeaderSupport:
         }
 
     def test_converse_transformation_anthropic_beta(self):
-        """Test that Converse API transformation includes anthropic_beta in additionalModelRequestFields."""
+        """Test that Converse API transformation includes anthropic_beta in additionalModelRequestFields.
+
+        ``interleaved-thinking-2025-05-14`` is filtered out for bedrock_converse
+        (it is null in anthropic_beta_headers_config.json). Only headers with a
+        non-null mapping survive the filter.
+        """
         config = AmazonConverseConfig()
         headers = {
             "anthropic-beta": "context-1m-2025-08-07,interleaved-thinking-2025-05-14"
@@ -87,10 +92,10 @@ class TestAnthropicBetaHeaderSupport:
         assert "additionalModelRequestFields" in result
         additional_fields = result["additionalModelRequestFields"]
         assert "anthropic_beta" in additional_fields
-        # Sort both arrays before comparing to avoid flakiness from ordering differences
-        assert sorted(additional_fields["anthropic_beta"]) == sorted(
-            ["context-1m-2025-08-07", "interleaved-thinking-2025-05-14"]
-        )
+        # Only the supported header remains; the JSON-null one is filtered.
+        assert set(additional_fields["anthropic_beta"]) == {
+            "context-1m-2025-08-07",
+        }
 
     def test_messages_transformation_anthropic_beta(self):
         """Test that Messages API transformation includes anthropic_beta in request."""
@@ -407,7 +412,7 @@ class TestAnthropicBetaHeaderSupport:
         config = AmazonConverseConfig()
         # Pass headers with unsupported beta patterns
         headers = {
-            "anthropic-beta": "advanced-tool-use-2025-11-20,prompt-caching-2024-07-31,compact-2026-01-12,effort-2025-11-24,context-1m-2025-08-07"
+            "anthropic-beta": "advanced-tool-use-2025-11-20,compact-2026-01-12,effort-2025-11-24,context-1m-2025-08-07"
         }
 
         result = config._transform_request_helper(
@@ -419,15 +424,19 @@ class TestAnthropicBetaHeaderSupport:
         )
 
         additional_fields = result.get("additionalModelRequestFields", {})
-        if "anthropic_beta" in additional_fields:
-            betas = additional_fields["anthropic_beta"]
-            # These should be filtered out
-            assert "advanced-tool-use-2025-11-20" not in betas
-            assert "prompt-caching-2024-07-31" not in betas
-            assert "compact-2026-01-12" not in betas
-            assert "effort-2025-11-24" not in betas
-            # This should remain
-            assert "context-1m-2025-08-07" in betas
+        assert "anthropic_beta" in additional_fields, (
+            f"anthropic_beta must be present; got {additional_fields!r}"
+        )
+        betas = additional_fields["anthropic_beta"]
+        # These should be filtered out (null in JSON bedrock_converse)
+        for blocked in [
+            "advanced-tool-use-2025-11-20",
+            "compact-2026-01-12",
+            "effort-2025-11-24",
+        ]:
+            assert blocked not in betas, f"{blocked!r} should be filtered out"
+        # This should remain (non-null in JSON bedrock_converse)
+        assert "context-1m-2025-08-07" in betas
 
     def test_converse_effort_beta_not_in_additional_model_request_fields(self):
         """Test that effort beta header is filtered out in Converse API transformation.
@@ -467,3 +476,71 @@ class TestAnthropicBetaHeaderSupport:
 
         additional_fields = result.get("additionalModelRequestFields", {})
         assert "anthropic_beta" not in additional_fields
+
+    def test_converse_filters_all_json_unsupported_betas(self):
+        """All entries marked null in JSON bedrock_converse config should be filtered.
+
+        The legacy substring filter only blocked 4 of 25 unsupported betas. The
+        JSON-driven filter must cover every entry with a null value in
+        anthropic_beta_headers_config.json under the "bedrock_converse" provider,
+        not just the 4 that happened to match the legacy substring patterns.
+        """
+        # Force the manager to use the local file (it otherwise fetches from a
+        # remote URL and may diverge from our local config).
+        import os
+
+        from litellm import anthropic_beta_headers_manager
+
+        os.environ["LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS"] = "True"
+        anthropic_beta_headers_manager._BETA_HEADERS_CONFIG = None
+
+        config = AmazonConverseConfig()
+        # Mix of:
+        #   - 4 betas the legacy substring filter caught (advanced-tool-use-2025-11-20,
+        #     compact-2026-01-12, effort-2025-11-24, prompt-caching-scope-2026-01-05)
+        #   - 5 betas the legacy substring filter MISSED but JSON marks null
+        #     (interleaved-thinking-2025-05-14, bash_20241022,
+        #     tool-search-tool-2025-10-19, mcp-client-2025-11-20,
+        #     skills-2025-10-02)
+        #   - 1 supported header that must remain (context-1m-2025-08-07)
+        headers = {
+            "anthropic-beta": ",".join([
+                "advanced-tool-use-2025-11-20",
+                "compact-2026-01-12",
+                "effort-2025-11-24",
+                "prompt-caching-scope-2026-01-05",
+                "interleaved-thinking-2025-05-14",
+                "bash_20241022",
+                "tool-search-tool-2025-10-19",
+                "mcp-client-2025-11-20",
+                "skills-2025-10-02",
+                "context-1m-2025-08-07",
+            ])
+        }
+
+        result = config._transform_request_helper(
+            model="anthropic.claude-haiku-4-5-20251001-v1:0",
+            system_content_blocks=[],
+            optional_params={},
+            messages=[{"role": "user", "content": "Test"}],
+            headers=headers,
+        )
+
+        additional_fields = result.get("additionalModelRequestFields", {})
+        assert "anthropic_beta" in additional_fields, (
+            f"anthropic_beta must be present; got {additional_fields!r}"
+        )
+        betas = additional_fields["anthropic_beta"]
+        for blocked in [
+            "advanced-tool-use-2025-11-20",
+            "compact-2026-01-12",
+            "effort-2025-11-24",
+            "prompt-caching-scope-2026-01-05",
+            "interleaved-thinking-2025-05-14",
+            "bash_20241022",
+            "tool-search-tool-2025-10-19",
+            "mcp-client-2025-11-20",
+            "skills-2025-10-02",
+        ]:
+            assert blocked not in betas, f"{blocked!r} should be filtered out"
+        assert "context-1m-2025-08-07" in betas
