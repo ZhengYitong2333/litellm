@@ -443,9 +443,13 @@ class TestAnthropicBetaHeaderSupport:
 
         The Converse API handles effort via outputConfig, not anthropic_beta.
         Passing effort-2025-11-24 in anthropic_beta causes 'invalid beta flag' errors.
+        We pair the unsupported header with a supported one so the field stays
+        present after filtering — otherwise the assertion would be vacuous.
         """
         config = AmazonConverseConfig()
-        headers = {"anthropic-beta": "effort-2025-11-24"}
+        headers = {
+            "anthropic-beta": "effort-2025-11-24,context-1m-2025-08-07",
+        }
 
         result = config._transform_request_helper(
             model="anthropic.claude-opus-4-5-20250609-v1:0",
@@ -456,9 +460,12 @@ class TestAnthropicBetaHeaderSupport:
         )
 
         additional_fields = result.get("additionalModelRequestFields", {})
-        # effort-2025-11-24 should be filtered out
-        if "anthropic_beta" in additional_fields:
-            assert "effort-2025-11-24" not in additional_fields["anthropic_beta"]
+        assert "anthropic_beta" in additional_fields, (
+            f"anthropic_beta must be present (supported header should remain); "
+            f"got {additional_fields!r}"
+        )
+        assert "effort-2025-11-24" not in additional_fields["anthropic_beta"]
+        assert "context-1m-2025-08-07" in additional_fields["anthropic_beta"]
 
     def test_converse_all_unsupported_betas_removed_leaves_empty_list(self):
         """Test that when all beta headers are unsupported, anthropic_beta is not set."""
