@@ -1749,12 +1749,11 @@ class LiteLLMCompletionResponsesConfig:
     def _should_drop_responses_builtin_tool(tool: Dict[str, Any]) -> bool:
         """
         Responses/Codex built-in tools that OpenAI-compatible chat providers reject.
-        Drop them so function tools can still be forwarded.
+        Drop only the ones that cannot be represented as Chat Completions function
+        tools.
         """
         tool_type = tool.get("type")
         if tool_type in {
-            "custom",
-            "shell",
             "computer_use_preview",
             "namespace",
             "tool_search",
@@ -1766,6 +1765,70 @@ class LiteLLMCompletionResponsesConfig:
         if isinstance(tool_name, str) and tool_name.startswith("tool_search_tool_"):
             return True
         return False
+
+    @staticmethod
+    def _transform_responses_builtin_tool_to_function_tool(
+        tool: Dict[str, Any],
+    ) -> Optional[ChatCompletionToolParam]:
+        """
+        Convert Responses/Codex built-in tools that have a clear function-call
+        equivalent into Chat Completions tools.
+
+        Dropping these tools makes Codex agents answer in prose instead of calling
+        shell/custom tools. Forwarding their native Responses shape makes strict
+        OpenAI-compatible providers reject the request. Mapping to function tools
+        gives chat providers a valid tool surface while preserving the call names
+        Codex expects in returned function_call items.
+        """
+        tool_type = tool.get("type")
+        function_name: Optional[str] = None
+        description = ""
+        parameters: Dict[str, Any]
+
+        if tool_type == "shell":
+            function_name = "shell"
+            description = "Run a shell command in the local workspace."
+            parameters = {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Command to execute, as a shell string or argv list.",
+                    }
+                },
+                "required": ["command"],
+            }
+        elif tool_type == "custom":
+            tool_name = tool.get("name")
+            if isinstance(tool_name, str) and tool_name:
+                function_name = tool_name
+            description = str(tool.get("description") or "")
+            input_schema = tool.get("input_schema") or tool.get("parameters")
+            parameters = dict(input_schema) if isinstance(input_schema, dict) else {}
+            if parameters.get("type") != "object":
+                parameters["type"] = "object"
+            parameters.setdefault("properties", {})
+        else:
+            return None
+
+        if not function_name:
+            return None
+
+        return cast(
+            ChatCompletionToolParam,
+            {
+                "type": "function",
+                "function": {
+                    "name": function_name,
+                    "description": description,
+                    "parameters": parameters,
+                    "strict": False,
+                },
+            },
+        )
 
     @staticmethod
     def transform_responses_api_tools_to_chat_completion_tools(
@@ -1827,12 +1890,15 @@ class LiteLLMCompletionResponsesConfig:
                 chat_completion_tools.append(
                     cast(ChatCompletionToolParam, chat_completion_tool)
                 )
+            elif builtin_function_tool := LiteLLMCompletionResponsesConfig._transform_responses_builtin_tool_to_function_tool(
+                cast(Dict[str, Any], tool)
+            ):
+                chat_completion_tools.append(builtin_function_tool)
             elif LiteLLMCompletionResponsesConfig._should_drop_responses_builtin_tool(
-                tool
+                cast(Dict[str, Any], tool)
             ):
                 # Codex/Responses built-in tools that are not valid Chat Completions tools.
-                # Dropping them prevents OpenAI-compatible providers from rejecting the
-                # whole request while preserving function tools.
+                # Dropping them prevents OpenAI-compatible providers from rejecting the whole request.
                 continue
             else:
                 chat_completion_tools.append(
@@ -2375,6 +2441,14 @@ class LiteLLMCompletionResponsesConfig:
                 )
                 message_output_items.extend(image_generation_items)
             else:
+                message_content = getattr(choice.message, "content", None)
+                message_tool_calls = getattr(choice.message, "tool_calls", None)
+                if message_tool_calls and not message_content:
+                    # Tool-only turns should surface as function_call output items,
+                    # not as an empty message followed by function_call. Some
+                    # Responses clients stop on the first message item and never
+                    # execute the subsequent tool call.
+                    continue
                 # Regular message output
                 message_output_items.append(
                     GenericResponseOutputItem(

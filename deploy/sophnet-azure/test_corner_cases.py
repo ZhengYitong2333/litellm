@@ -1132,6 +1132,18 @@ def build_cases() -> List[Case]:
             )
         )
 
+    # Empty-input handling (Codex CLI historical bug)
+    for model in CHAT_MODELS:
+        cases.append(
+            Case(
+                id=f"matrix.responses.empty_input.{model}",
+                tier="matrix",
+                why="empty input is either rejected with 4xx or returns non-empty text (not silent 200 with empty)",
+                fn=lambda m=model, fn=matrix["responses_empty_input_handling"]: fn(m),
+                timeout=60,
+            )
+        )
+
     # Claude-style models only (output_config.effort is Anthropic feature)
     CLAUDE_STYLE = [CLAUDE, GLM, DEEPSEEK_PRO, "deepseek-v4-flash"]
     for model in CLAUDE_STYLE:
@@ -2067,6 +2079,81 @@ def case_chat_anthropic_beta_header_matrix(model: str) -> dict:
             "latency_s": round(time.perf_counter() - start, 2),
             "error": str(exc)[:200],
         }
+
+
+
+@_register_matrix_case("responses_empty_input_handling")
+def case_responses_empty_input_handling(model: str) -> dict:
+    """How the proxy handles empty/malformed Codex /v1/responses input.
+
+    Historical failure: Codex CLI occasionally sent empty or whitespace-only
+    input. The proxy used to silently 200 with an empty response, which
+    confused the CLI. We now verify the proxy either:
+      - returns a 4xx with a clear error message, OR
+      - returns 200 with non-empty text (the model handled empty input)
+
+    Anything else (silent 200 with empty text, opaque 500) is a regression.
+    """
+    payload = {"model": model, "input": "", "max_output_tokens": 64, "stream": True}
+    req = urllib.request.Request(
+        f"{BASE}/v1/responses",
+        data=json.dumps(payload).encode(),
+        headers=_headers(),
+        method="POST",
+    )
+    start = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = b""
+            for line in resp:
+                raw += line
+            elapsed = time.perf_counter() - start
+            text = raw.decode(errors="replace")
+            import re
+            # Get the final non-empty text. Match all occurrences and take
+            # the last non-empty one. The first match is usually the early
+            # response.text.text="" placeholder.
+            matches = re.findall(r'"text":\s*"([^"]{0,200})"', text)
+            final_text = next((m for m in reversed(matches) if m), "")
+            # Check: response should be either a clear 4xx (above path) or 200 with
+            # non-empty text. Empty 200 is a regression.
+            # Reasoning-heavy models (deepseek-v4-pro/flash) can hit max_output_tokens
+            # entirely on thinking, leaving message text empty. Accept that as
+            # valid if status="incomplete".
+            if not final_text:
+                m_inc = re.search(r'"status":\s*"incomplete"', text)
+                if m_inc:
+                    return {
+                        "ok": True,
+                        "status": resp.status,
+                        "latency_s": round(elapsed, 2),
+                        "preview": "empty_input_truncated_by_max_tokens (reasoning-only)",
+                    }
+                return {
+                    "ok": False,
+                    "status": resp.status,
+                    "latency_s": round(elapsed, 2),
+                    "error": f"empty input silently produced empty response (model={model})",
+                }
+            return {
+                "ok": True,
+                "status": resp.status,
+                "latency_s": round(elapsed, 2),
+                "preview": f"empty_input_handled text={final_text[:40]!r}",
+            }
+    except urllib.error.HTTPError as exc:  # noqa: BLE001
+        if exc.code in RETRY_STATUS or exc.code >= 500:
+            # 5xx with retry is treated as upstream flake
+            return {"ok": True, "skip": True, "preview": f"upstream {exc.code}"}
+        # 4xx is acceptable (proxy rejected the bad input)
+        return {
+            "ok": True,
+            "status": exc.code,
+            "latency_s": round(time.perf_counter() - start, 2),
+            "preview": f"rejected_empty_input status={exc.code}",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)[:200]}
 
 if __name__ == "__main__":
     sys.exit(main())

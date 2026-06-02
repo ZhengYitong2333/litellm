@@ -374,6 +374,45 @@ class TestLiteLLMCompletionResponsesConfig:
         assert message_items[0].content[0].text == "Just a regular answer."
         assert responses_api_response.object == "response"
 
+    def test_transform_tool_only_chat_response_omits_empty_message_item(self):
+        """Tool-only turns should surface function_call items without an empty message first."""
+        chat_completion_response = ModelResponse(
+            id="test-response-id",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion",
+            choices=[
+                Choices(
+                    finish_reason="tool_calls",
+                    index=0,
+                    message=Message(
+                        content=None,
+                        role="assistant",
+                        tool_calls=[
+                            ChatCompletionMessageToolCall(
+                                id="call_exec",
+                                type="function",
+                                function=Function(
+                                    name="exec_command",
+                                    arguments='{"cmd": "pwd"}',
+                                ),
+                            )
+                        ],
+                    ),
+                )
+            ],
+        )
+
+        responses_api_response = LiteLLMCompletionResponsesConfig.transform_chat_completion_response_to_responses_api_response(
+            request_input="Run pwd",
+            responses_api_request={},
+            chat_completion_response=chat_completion_response,
+        )
+
+        assert len(responses_api_response.output) == 1
+        assert responses_api_response.output[0].type == "function_call"
+        assert responses_api_response.output[0].name == "exec_command"
+
     def test_transform_chat_completion_response_multiple_choices_with_reasoning(self):
         """Test that only reasoning from first choice is included when multiple choices exist"""
         # Setup
@@ -825,8 +864,8 @@ class TestFunctionCallTransformation:
 
         assert result["reasoning_effort"] == "medium"
 
-    def test_custom_tool_is_not_forwarded_to_chat_completions(self):
-        """Responses custom tools are not valid Chat Completions tools."""
+    def test_custom_tool_is_forwarded_as_chat_function_tool(self):
+        """Responses custom tools are represented as Chat Completions function tools."""
         tools = [
             {
                 "type": "custom",
@@ -852,8 +891,11 @@ class TestFunctionCallTransformation:
         )
 
         assert [tool["function"]["name"] for tool in result["tools"]] == [
-            "exec_command"
+            "apply_patch",
+            "exec_command",
         ]
+        assert result["tools"][0]["type"] == "function"
+        assert result["tools"][0]["function"]["parameters"]["type"] == "object"
 
     def test_azure_tools_drop_reasoning_effort_before_chat_completion(self):
         """Azure chat-completions hangs when tools and reasoning_effort are sent together."""
@@ -1494,8 +1536,8 @@ class TestToolTransformation:
             == "string"
         )
 
-    def test_transform_drops_unsupported_responses_builtin_tools(self):
-        """shell/computer_use_preview are not valid Chat Completions tools."""
+    def test_transform_maps_supported_responses_builtin_tools(self):
+        """shell can be represented as a Chat Completions function tool."""
         tools = [
             {
                 "type": "function",
@@ -1522,9 +1564,12 @@ class TestToolTransformation:
         )
 
         assert web_search_options is None
-        assert len(result_tools) == 1
+        assert len(result_tools) == 2
         assert result_tools[0]["type"] == "function"
         assert result_tools[0]["function"]["name"] == "read_file"
+        assert result_tools[1]["type"] == "function"
+        assert result_tools[1]["function"]["name"] == "shell"
+        assert "command" in result_tools[1]["function"]["parameters"]["properties"]
 
     def test_transform_converts_custom_tools_to_function(self):
         tools = [
@@ -1546,10 +1591,13 @@ class TestToolTransformation:
         )
 
         assert web_search_options is None
-        # Custom/Codex built-in tools are dropped by
-        # _should_drop_responses_builtin_tool so they don't cause
-        # OpenAI-compatible providers to reject the request.
-        assert len(result_tools) == 0
+        assert len(result_tools) == 1
+        assert result_tools[0]["type"] == "function"
+        assert result_tools[0]["function"]["name"] == "codex_tool"
+        assert (
+            result_tools[0]["function"]["parameters"]["properties"]["path"]["type"]
+            == "string"
+        )
 
     def test_tool_results_pulled_contiguous_after_assistant_tool_calls(self):
         """
