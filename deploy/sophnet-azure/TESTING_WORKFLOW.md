@@ -168,3 +168,73 @@ git push
 | `restart-proxy.sh` | 改 `litellm/` 后重启 |
 | `VSCODE_CC_CODEX.md` | CC/Codex 客户端配置 |
 | `~/.claude/skills/litellm-proxy-testing/SKILL.md` | Agent 技能（流程摘要） |
+
+## 8. 单元 + 集成双层 corner case 测试
+
+测试覆盖 `tests/test_litellm/llms/bedrock/test_modellist_corner_cases.py`(pytest 单元,不需要 live proxy)与 `deploy/sophnet-azure/test_corner_cases.py`(live proxy 集成)。两者职责分明:
+
+### 单元层(`test_modellist_corner_cases.py`)
+
+直接调用 `AmazonConverseConfig._transform_request_helper`,验证 Bedrock Converse 转换层在每个 modellist 条目上行为正确。CI 里不需要 proxy。
+
+- `TestEffortBetaLeakRegression`: 9 models × 2 cases(output_config + header)— 守住 `effort-2025-11-24` 不再 leak 进 `anthropic_beta`
+- `TestJsonDrivenBetaFilter`: 9 个 JSON null 的 betas 都被过滤 + 1 个 supported pass-through + empty headers
+- `TestBedrockConverseStability`: 9 models × 3(basic + tools + cross-region prefix)
+
+跑法:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_litellm/llms/bedrock/test_modellist_corner_cases.py -v
+```
+
+或全 bedrock 套件:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_litellm/llms/bedrock/ -n 4
+```
+
+### 集成层(`test_corner_cases.py`)
+
+实际打 proxy 端点,验证 9 个 modellist 模型 × 3 endpoint(`/v1/chat/completions`、`/v1/messages`、`/v1/responses`)的稳定型 + corner case:
+
+- **matrix tier(120 case 起步,2026-06 扩到 183 case)**: 每个 model × 每个 endpoint × 各类 case
+  - `matrix.chat.stream.{model}` / `matrix.messages.stream.{model}` / `matrix.responses.stream.{model}` — 流式稳定
+  - `matrix.chat.tools.{model}` / `matrix.messages.tools.{model}` / `matrix.responses.tools.{model}` — 工具调用稳定
+  - `matrix.chat.stream_tools.{model}` / `matrix.messages.stream_tools.{model}` / `matrix.responses.stream_tools.{model}` — 流式 + 工具(CC/Codex 的核心路径)
+  - `matrix.messages.tool_choice_any.{model}` — 强制工具调用
+  - `matrix.chat.anthropic_beta_header.{model}` — beta header 过滤 end-to-end
+  - `matrix.messages.output_config_effort.{model}` — `output_config.effort` 不 leak
+  - `matrix.chat.long_context.{model}` / `matrix.chat.long_context_32k.{model}` — 长上下文
+  - `matrix.chat.max_tokens_one.{model}` / `matrix.messages.system.{model}` — 边界 case
+- **full tier**: 旧有 streaming/reasoning/structured output 等
+- **stress tier**: 小并发
+
+跑法:
+
+```bash
+# 冒烟(默认 ~30s)
+cd deploy/sophnet-azure
+python3 test_corner_cases.py
+
+# 全 modellist 矩阵(~2 min,165 case)
+python3 test_corner_cases.py --matrix
+
+# 矩阵 + 旧 full tier(~3 min,183 case)
+python3 test_corner_cases.py --full
+```
+
+### 何时跑哪一层
+
+| 改了什么 | 跑哪个 |
+|----------|--------|
+| `litellm/llms/bedrock/chat/converse_transformation.py` 等转换层 | pytest 单元(`test_modellist_corner_cases.py` + 整套 bedrock pytest) |
+| `litellm/anthropic_beta_headers_config.json` / manager | pytest 单元 + 集成 matrix(`--matrix`) |
+| Proxy 路由 / 配置 / adapter | 集成 matrix(`--full`) |
+| 端到端新功能 | 集成 matrix + pytest 单元 |
+
+修 bedrock transformation 的 commit 应当两个都跑:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_litellm/llms/bedrock/test_modellist_corner_cases.py -v
+cd deploy/sophnet-azure && python3 test_corner_cases.py --full
+```
