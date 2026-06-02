@@ -334,3 +334,59 @@ class TestJsonKeywordInjectionForStructuredOutput:
         assert completion_kwargs["messages"] == [
             {"role": "user", "content": "Return JSON only."}
         ]
+
+
+class TestCodexToolNormalization:
+    def test_drops_codex_builtin_tools_from_messages_adapter(self):
+        result = _call_prepare(
+            extra_kwargs={"custom_llm_provider": "openai"},
+            tools=[
+                {"type": "shell", "environment": {"type": "local"}},
+                {
+                    "type": "computer_use_preview",
+                    "display_width": 1024,
+                    "display_height": 768,
+                    "environment": "mac",
+                },
+                {"type": "namespace", "name": "codex"},
+                {
+                    "name": "get_weather",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                    },
+                },
+            ],
+        )
+        completion_kwargs = result[0] if isinstance(result, tuple) else result
+
+        tools = completion_kwargs["tools"]
+        assert len(tools) == 1
+        assert tools[0]["function"]["name"] == "get_weather"
+        assert tools[0]["function"]["parameters"]["type"] == "object"
+
+    def test_unwraps_flat_codex_function_parameters(self):
+        result = _call_prepare(
+            extra_kwargs={"custom_llm_provider": "openai"},
+            tools=[
+                {
+                    "type": "function",
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"],
+                    },
+                },
+            ],
+        )
+        completion_kwargs = result[0] if isinstance(result, tuple) else result
+
+        tool = completion_kwargs["tools"][0]
+        assert tool["function"]["name"] == "read_file"
+        assert tool["function"]["parameters"] == {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        }

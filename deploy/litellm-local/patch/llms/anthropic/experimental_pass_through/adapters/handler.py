@@ -50,6 +50,9 @@ if TYPE_CHECKING:
 # specific key.
 ANTHROPIC_ONLY_REQUEST_KEYS: frozenset[str] = frozenset({"output_config"})
 INTERNAL_LITELLM_REQUEST_KEYS: frozenset[str] = frozenset({"acompletion"})
+CODEX_UNSUPPORTED_CHAT_TOOL_TYPES: frozenset[str] = frozenset(
+    {"shell", "computer_use_preview", "namespace"}
+)
 
 ########################################################
 # init adapter
@@ -220,6 +223,48 @@ class LiteLLMMessagesToCompletionTransformationHandler:
         ]
 
     @staticmethod
+    def _drop_codex_builtin_tools_from_completion_kwargs(
+        completion_kwargs: Dict[str, Any],
+    ) -> None:
+        tools = completion_kwargs.get("tools")
+        if not isinstance(tools, list):
+            return
+
+        filtered_tools: List[Any] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                filtered_tools.append(tool)
+                continue
+
+            function = tool.get("function")
+            parameters = (
+                function.get("parameters") if isinstance(function, dict) else None
+            )
+            parameter_type = (
+                parameters.get("type") if isinstance(parameters, dict) else None
+            )
+            if parameter_type in CODEX_UNSUPPORTED_CHAT_TOOL_TYPES:
+                continue
+            if (
+                parameter_type == "function"
+                and isinstance(parameters, dict)
+                and isinstance(parameters.get("parameters"), dict)
+                and isinstance(function, dict)
+            ):
+                nested_parameters = parameters["parameters"]
+                if nested_parameters.get("type") != "object":
+                    nested_parameters = {**nested_parameters, "type": "object"}
+                    nested_parameters.setdefault("properties", {})
+                tool = {
+                    **tool,
+                    "function": {**function, "parameters": nested_parameters},
+                }
+
+            filtered_tools.append(tool)
+
+        completion_kwargs["tools"] = filtered_tools
+
+    @staticmethod
     def _prepare_completion_kwargs(
         *,
         max_tokens: int,
@@ -355,6 +400,9 @@ class LiteLLMMessagesToCompletionTransformationHandler:
             completion_kwargs
         )
         LiteLLMMessagesToCompletionTransformationHandler._drop_reasoning_effort_for_chat_completion_tools_opt_out(
+            completion_kwargs
+        )
+        LiteLLMMessagesToCompletionTransformationHandler._drop_codex_builtin_tools_from_completion_kwargs(
             completion_kwargs
         )
         LiteLLMMessagesToCompletionTransformationHandler._ensure_json_hint_for_response_format(

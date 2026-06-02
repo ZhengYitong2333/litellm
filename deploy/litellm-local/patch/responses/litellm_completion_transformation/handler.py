@@ -124,6 +124,7 @@ class LiteLLMCompletionTransformationHandler:
         # making the HTTP call.
         completion_args.pop("client_metadata", None)
         completion_args.pop("output_config", None)
+        completion_args.pop("acompletion", None)
         self._normalize_top_level_system_arg(completion_args)
         self._drop_azure_reasoning_effort_when_tools_present(completion_args)
 

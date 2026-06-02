@@ -118,7 +118,18 @@ class DeepSeekChatConfig(OpenAIGPTConfig):
                     cleaned.pop("reasoning_content", None)
                     patched["provider_specific_fields"] = cleaned
                 else:
-                    patched["reasoning_content"] = " "
+                    thinking_blocks = patched.get("thinking_blocks") or []
+                    reasoning_parts = [
+                        str(block.get("thinking") or "")
+                        for block in thinking_blocks
+                        if isinstance(block, dict)
+                        and block.get("type") == "thinking"
+                        and block.get("thinking")
+                    ]
+                    if reasoning_parts:
+                        patched["reasoning_content"] = "\n".join(reasoning_parts)
+                    else:
+                        patched["reasoning_content"] = " "
             result.append(cast(AllMessageValues, patched))
         return result
 
