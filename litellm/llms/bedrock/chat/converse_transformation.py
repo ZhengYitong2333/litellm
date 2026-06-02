@@ -89,6 +89,7 @@ BEDROCK_COMPUTER_USE_TOOLS = [
     "text_editor_",
 ]
 
+
 class AmazonConverseConfig(BaseConfig):
     """
     Reference - https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html
@@ -1421,7 +1422,9 @@ class AmazonConverseConfig(BaseConfig):
         base_model = BedrockModelInfo.get_base_model(model)
         if anthropic_beta_list:
             unsupported = self._get_unsupported_bedrock_converse_betas()
-            anthropic_beta_list = [b for b in anthropic_beta_list if b not in unsupported]
+            anthropic_beta_list = [
+                b for b in anthropic_beta_list if b not in unsupported
+            ]
 
         # Set anthropic_beta in additional_request_params if we have any beta features
         # ONLY apply to Anthropic/Claude models - other models (e.g., Qwen, Llama) don't support this field

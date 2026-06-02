@@ -4,6 +4,7 @@ Forces the anthropic_beta_headers_manager to use the local JSON file rather
 than fetching from a remote URL. This keeps tests deterministic and aligned
 with the local file the team actually edits.
 """
+
 import os
 
 import pytest

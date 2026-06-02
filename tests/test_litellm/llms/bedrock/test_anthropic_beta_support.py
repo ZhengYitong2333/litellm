@@ -424,9 +424,9 @@ class TestAnthropicBetaHeaderSupport:
         )
 
         additional_fields = result.get("additionalModelRequestFields", {})
-        assert "anthropic_beta" in additional_fields, (
-            f"anthropic_beta must be present; got {additional_fields!r}"
-        )
+        assert (
+            "anthropic_beta" in additional_fields
+        ), f"anthropic_beta must be present; got {additional_fields!r}"
         betas = additional_fields["anthropic_beta"]
         # These should be filtered out (null in JSON bedrock_converse)
         for blocked in [
@@ -511,18 +511,20 @@ class TestAnthropicBetaHeaderSupport:
         #     skills-2025-10-02)
         #   - 1 supported header that must remain (context-1m-2025-08-07)
         headers = {
-            "anthropic-beta": ",".join([
-                "advanced-tool-use-2025-11-20",
-                "compact-2026-01-12",
-                "effort-2025-11-24",
-                "prompt-caching-scope-2026-01-05",
-                "interleaved-thinking-2025-05-14",
-                "bash_20241022",
-                "tool-search-tool-2025-10-19",
-                "mcp-client-2025-11-20",
-                "skills-2025-10-02",
-                "context-1m-2025-08-07",
-            ])
+            "anthropic-beta": ",".join(
+                [
+                    "advanced-tool-use-2025-11-20",
+                    "compact-2026-01-12",
+                    "effort-2025-11-24",
+                    "prompt-caching-scope-2026-01-05",
+                    "interleaved-thinking-2025-05-14",
+                    "bash_20241022",
+                    "tool-search-tool-2025-10-19",
+                    "mcp-client-2025-11-20",
+                    "skills-2025-10-02",
+                    "context-1m-2025-08-07",
+                ]
+            )
         }
 
         result = config._transform_request_helper(
@@ -534,9 +536,9 @@ class TestAnthropicBetaHeaderSupport:
         )
 
         additional_fields = result.get("additionalModelRequestFields", {})
-        assert "anthropic_beta" in additional_fields, (
-            f"anthropic_beta must be present; got {additional_fields!r}"
-        )
+        assert (
+            "anthropic_beta" in additional_fields
+        ), f"anthropic_beta must be present; got {additional_fields!r}"
         betas = additional_fields["anthropic_beta"]
         for blocked in [
             "advanced-tool-use-2025-11-20",
