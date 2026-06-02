@@ -18,6 +18,19 @@ from litellm.llms.anthropic.experimental_pass_through.adapters.transformation im
 from litellm.llms.anthropic.experimental_pass_through.utils import (
     is_reasoning_auto_summary_enabled,
 )
+
+try:
+    from litellm.llms.anthropic.experimental_pass_through.utils import (
+        uses_azure_openai_api_base,
+    )
+except ImportError:
+
+    def uses_azure_openai_api_base(api_base: Optional[str]) -> bool:  # type: ignore[misc]
+        return isinstance(api_base, str) and (
+            ".azure.com" in api_base or ".services.ai.azure.com" in api_base
+        )
+
+
 from litellm.types.llms.anthropic_messages.anthropic_response import (
     AnthropicMessagesResponse,
 )
@@ -36,6 +49,7 @@ if TYPE_CHECKING:
 # extending AnthropicMessagesRequestOptionalParams with another Anthropic-
 # specific key.
 ANTHROPIC_ONLY_REQUEST_KEYS: frozenset[str] = frozenset({"output_config"})
+INTERNAL_LITELLM_REQUEST_KEYS: frozenset[str] = frozenset({"acompletion"})
 
 ########################################################
 # init adapter
@@ -61,6 +75,9 @@ class LiteLLMMessagesToCompletionTransformationHandler:
         If the user provides a `summary` field in the thinking dict, it is passed
         through to the OpenAI reasoning params (opt-in per OpenAI spec).
         """
+        if litellm.use_chat_completions_url_for_anthropic_messages:
+            return
+
         custom_llm_provider = completion_kwargs.get("custom_llm_provider")
         if custom_llm_provider is None:
             try:
@@ -157,6 +174,50 @@ class LiteLLMMessagesToCompletionTransformationHandler:
                     **reasoning_effort,
                     "effort": normalized,
                 }
+
+    @staticmethod
+    def _message_content_contains_json(content: Any) -> bool:
+        if isinstance(content, str):
+            return "json" in content.lower()
+        if isinstance(content, list):
+            return any(
+                isinstance(block, dict)
+                and LiteLLMMessagesToCompletionTransformationHandler._message_content_contains_json(
+                    block.get("text") or block.get("content")
+                )
+                for block in content
+            )
+        return False
+
+    @staticmethod
+    def _ensure_json_hint_for_response_format(
+        completion_kwargs: Dict[str, Any],
+    ) -> None:
+        response_format = completion_kwargs.get("response_format")
+        if not isinstance(response_format, dict):
+            return
+        if response_format.get("type") not in {"json_object", "json_schema"}:
+            return
+
+        messages = completion_kwargs.get("messages")
+        if not isinstance(messages, list):
+            return
+        if any(
+            isinstance(message, dict)
+            and LiteLLMMessagesToCompletionTransformationHandler._message_content_contains_json(
+                message.get("content")
+            )
+            for message in messages
+        ):
+            return
+
+        completion_kwargs["messages"] = [
+            {
+                "role": "system",
+                "content": "Return the response as valid JSON.",
+            },
+            *messages,
+        ]
 
     @staticmethod
     def _prepare_completion_kwargs(
@@ -257,7 +318,11 @@ class LiteLLMMessagesToCompletionTransformationHandler:
         # Maintainability: when adding a new Anthropic-only request param to
         # ``AnthropicMessagesRequestOptionalParams``, also extend
         # ``ANTHROPIC_ONLY_REQUEST_KEYS`` here so it doesn't silently leak.
-        excluded_keys = ANTHROPIC_ONLY_REQUEST_KEYS | {"anthropic_messages"}
+        excluded_keys = (
+            ANTHROPIC_ONLY_REQUEST_KEYS
+            | INTERNAL_LITELLM_REQUEST_KEYS
+            | {"anthropic_messages"}
+        )
         # NOTE: extra_kwargs was already coerced from None to {} at the top of
         # this method (line ~220). It is guaranteed to be a dict here.
         for key, value in extra_kwargs.items():
@@ -286,6 +351,15 @@ class LiteLLMMessagesToCompletionTransformationHandler:
         LiteLLMMessagesToCompletionTransformationHandler._normalize_reasoning_effort(
             completion_kwargs
         )
+        LiteLLMMessagesToCompletionTransformationHandler._normalize_azure_openai_minimal_reasoning_effort(
+            completion_kwargs
+        )
+        LiteLLMMessagesToCompletionTransformationHandler._drop_reasoning_effort_for_chat_completion_tools_opt_out(
+            completion_kwargs
+        )
+        LiteLLMMessagesToCompletionTransformationHandler._ensure_json_hint_for_response_format(
+            completion_kwargs
+        )
 
         LiteLLMMessagesToCompletionTransformationHandler._route_openai_thinking_to_responses_api_if_needed(
             completion_kwargs,
@@ -293,6 +367,43 @@ class LiteLLMMessagesToCompletionTransformationHandler:
         )
 
         return completion_kwargs, tool_name_mapping
+
+    @staticmethod
+    def _normalize_azure_openai_minimal_reasoning_effort(
+        completion_kwargs: Dict[str, Any],
+    ) -> None:
+        api_base = completion_kwargs.get("api_base") or completion_kwargs.get(
+            "base_url"
+        )
+        if not uses_azure_openai_api_base(api_base):
+            return
+
+        reasoning_effort = completion_kwargs.get("reasoning_effort")
+        if reasoning_effort == "minimal":
+            completion_kwargs["reasoning_effort"] = "low"
+        elif (
+            isinstance(reasoning_effort, dict)
+            and reasoning_effort.get("effort") == "minimal"
+        ):
+            completion_kwargs["reasoning_effort"] = {
+                **reasoning_effort,
+                "effort": "low",
+            }
+
+    @staticmethod
+    def _drop_reasoning_effort_for_chat_completion_tools_opt_out(
+        completion_kwargs: Dict[str, Any],
+    ) -> None:
+        if not litellm.use_chat_completions_url_for_anthropic_messages:
+            return
+        if not completion_kwargs.get("tools"):
+            return
+
+        # LiteLLM's OpenAI GPT-5.4+ chat path automatically routes
+        # tools+reasoning_effort through Responses API. When the caller has
+        # explicitly opted Anthropic Messages into chat/completions routing,
+        # preserve tools and avoid that recursive Responses fallback.
+        completion_kwargs.pop("reasoning_effort", None)
 
     @staticmethod
     async def async_anthropic_messages_handler(

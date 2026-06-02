@@ -17,8 +17,20 @@ from litellm.llms.anthropic.experimental_pass_through.adapters.transformation im
 )
 from litellm.llms.anthropic.experimental_pass_through.utils import (
     is_reasoning_auto_summary_enabled,
-    uses_azure_openai_api_base,
 )
+
+try:
+    from litellm.llms.anthropic.experimental_pass_through.utils import (
+        uses_azure_openai_api_base,
+    )
+except ImportError:
+
+    def uses_azure_openai_api_base(api_base: Optional[str]) -> bool:  # type: ignore[misc]
+        return isinstance(api_base, str) and (
+            ".azure.com" in api_base or ".services.ai.azure.com" in api_base
+        )
+
+
 from litellm.types.llms.anthropic_messages.anthropic_response import (
     AnthropicMessagesResponse,
 )
