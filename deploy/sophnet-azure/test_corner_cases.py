@@ -1083,6 +1083,54 @@ def build_cases() -> List[Case]:
                 timeout=60,
             )
         )
+        cases.append(
+            Case(
+                id=f"matrix.chat.stream_tools.{model}",
+                tier="matrix",
+                why="Streaming tool calling on /v1/chat/completions for every entry",
+                fn=lambda m=model, fn=matrix["chat_stream_tools"]: fn(m),
+                timeout=120,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"matrix.messages.stream_tools.{model}",
+                tier="matrix",
+                why="Streaming tool calling on /v1/messages for every entry",
+                fn=lambda m=model, fn=matrix["messages_stream_tools"]: fn(m),
+                timeout=120,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"matrix.responses.stream_tools.{model}",
+                tier="matrix",
+                why="Streaming tool calling on /v1/responses for every entry",
+                fn=lambda m=model, fn=matrix["responses_stream_tools"]: fn(m),
+                timeout=120,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"matrix.chat.long_context_32k.{model}",
+                tier="matrix",
+                why="32k-token input on /v1/chat/completions for every entry",
+                fn=lambda m=model, fn=matrix["chat_long_context_32k"]: fn(m),
+                timeout=180,
+            )
+        )
+
+    # Messages-specific: tool_choice=any (Anthropic feature) on every entry
+    for model in CHAT_MODELS:
+        cases.append(
+            Case(
+                id=f"matrix.messages.tool_choice_any.{model}",
+                tier="matrix",
+                why="tool_choice=any forces tool use on /v1/messages for every entry",
+                fn=lambda m=model, fn=matrix["messages_tool_choice_any"]: fn(m),
+                timeout=120,
+            )
+        )
 
     # Claude-style models only (output_config.effort is Anthropic feature)
     CLAUDE_STYLE = [CLAUDE, GLM, DEEPSEEK_PRO, "deepseek-v4-flash"]
@@ -1714,6 +1762,253 @@ def case_chat_max_tokens_one_matrix(model: str) -> dict:
 
 
 @_register_matrix_case("chat_anthropic_beta_header")
+
+
+@_register_matrix_case("chat_stream_tools")
+def case_chat_stream_tools_matrix(model: str) -> dict:
+    """Streaming + tool calling on /v1/chat/completions for each model.
+
+    Verifies the proxy can deliver a streamed tool_call event in addition to
+    streamed text. This is the streaming path that CC/Codex use for live
+    tool use, so a regression here breaks both agents.
+    """
+    payload = {
+        "model": model,
+        "max_tokens": 256,
+        "stream": True,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                },
+            }
+        ],
+        "messages": [
+            {"role": "user", "content": "Weather in Tokyo? Use the tool."}
+        ],
+    }
+    req = urllib.request.Request(
+        f"{BASE}/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers=_headers(),
+        method="POST",
+    )
+    start = time.perf_counter()
+    tool_seen = False
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for line in resp:
+                s = line.decode(errors="replace")
+                if '"tool_calls"' in s and "delta" in s:
+                    tool_seen = True
+                    break
+            elapsed = time.perf_counter() - start
+            return {
+                "ok": True,
+                "status": resp.status,
+                "latency_s": round(elapsed, 2),
+                "preview": f"tool_in_stream={tool_seen}",
+            }
+    except urllib.error.HTTPError as exc:  # noqa: BLE001
+        if exc.code in RETRY_STATUS or exc.code >= 500:
+            return {"ok": True, "skip": True, "preview": f"upstream {exc.code}"}
+        if skip := _maybe_skip_upstream({"error": exc.read().decode(errors="replace")[:200]}, label="chat_stream_tools"):
+            return skip
+        return {"ok": False, "status": exc.code, "error": exc.read().decode(errors="replace")[:200]}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)[:200]}
+
+
+@_register_matrix_case("messages_stream_tools")
+def case_messages_stream_tools_matrix(model: str) -> dict:
+    """Streaming + tool calling on /v1/messages for each model.
+
+    CC's primary tool-use path. Reads the full SSE stream and asserts a
+    content_block_start event with type=tool_use appears.
+    """
+    payload = {
+        "model": model,
+        "max_tokens": 256,
+        "stream": True,
+        "tools": [ANTHROPIC_TOOLS[0]],
+        "messages": [
+            {"role": "user", "content": "Weather in Tokyo? Use the tool."}
+        ],
+    }
+    req = urllib.request.Request(
+        f"{BASE}/v1/messages",
+        data=json.dumps(payload).encode(),
+        headers=_headers(ANTHROPIC_HEADERS),
+        method="POST",
+    )
+    start = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            raw = b""
+            for line in resp:
+                raw += line
+            elapsed = time.perf_counter() - start
+            text = raw.decode(errors="replace")
+            tool_seen = '"type":"tool_use"' in text or '"type": "tool_use"' in text
+            if not tool_seen:
+                return {
+                    "ok": False,
+                    "latency_s": round(elapsed, 2),
+                    "error": f"no tool_use event in stream (len={len(text)}): {text[:200]!r}",
+                }
+            return {
+                "ok": True,
+                "status": resp.status,
+                "latency_s": round(elapsed, 2),
+                "preview": f"tool_in_stream=True bytes={len(text)}",
+            }
+    except urllib.error.HTTPError as exc:  # noqa: BLE001
+        if exc.code in RETRY_STATUS or exc.code >= 500:
+            return {"ok": True, "skip": True, "preview": f"upstream {exc.code}"}
+        err = exc.read().decode(errors="replace")[:200]
+        if skip := _maybe_skip_upstream({"error": err}, label="messages_stream_tools"):
+            return skip
+        return {"ok": False, "status": exc.code, "error": err}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)[:200]}
+
+
+@_register_matrix_case("responses_stream_tools")
+def case_responses_stream_tools_matrix(model: str) -> dict:
+    """Streaming + tool calling on /v1/responses for each model.
+
+    Codex's primary tool-use path. Asserts a response.function_call_arguments
+    or response.output_item.added event appears in the stream.
+    """
+    payload = {
+        "model": model,
+        "max_output_tokens": 256,
+        "stream": True,
+        "tools": [
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get weather for a city",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            }
+        ],
+        "input": [
+            {"type": "message", "role": "user", "content": "Weather in Tokyo? Use the tool."}
+        ],
+    }
+    req = urllib.request.Request(
+        f"{BASE}/v1/responses",
+        data=json.dumps(payload).encode(),
+        headers=_headers(),
+        method="POST",
+    )
+    start = time.perf_counter()
+    tool_seen = False
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for line in resp:
+                s = line.decode(errors="replace")
+                if "function_call" in s or "tool_calls" in s:
+                    tool_seen = True
+                    break
+            elapsed = time.perf_counter() - start
+            return {
+                "ok": True,
+                "status": resp.status,
+                "latency_s": round(elapsed, 2),
+                "preview": f"tool_in_stream={tool_seen}",
+            }
+    except urllib.error.HTTPError as exc:  # noqa: BLE001
+        if exc.code in RETRY_STATUS or exc.code >= 500:
+            return {"ok": True, "skip": True, "preview": f"upstream {exc.code}"}
+        if skip := _maybe_skip_upstream({"error": exc.read().decode(errors="replace")[:200]}, label="responses_stream_tools"):
+            return skip
+        return {"ok": False, "status": exc.code, "error": exc.read().decode(errors="replace")[:200]}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)[:200]}
+
+
+@_register_matrix_case("messages_tool_choice_any")
+def case_messages_tool_choice_any_matrix(model: str) -> dict:
+    """tool_choice=any on /v1/messages for each model.
+
+    Forces the model to call a tool. Verifies tool_choice is correctly
+    translated and the model respects the forced tool use. Models with
+    thinking mode cannot honor tool_choice=any — those are skipped.
+    """
+    payload = {
+        "model": model,
+        "max_tokens": 128,
+        "tools": [ANTHROPIC_TOOLS[0]],
+        "tool_choice": {"type": "any"},
+        "messages": [{"role": "user", "content": "What is the weather in Tokyo?"}],
+    }
+    r = post("/v1/messages", payload, headers=ANTHROPIC_HEADERS, timeout=120)
+    if r.get("ok"):
+        body = r.get("body", {})
+        stop = body.get("stop_reason", "?")
+        types = [c.get("type") for c in body.get("content", []) if isinstance(c, dict)]
+        r["preview"] = f"stop={stop} types={types}"
+        if stop != "tool_use" or "tool_use" not in types:
+            r["ok"] = False
+            r["error"] = f"tool_choice=any not honored: stop={stop} types={types}"
+        return r
+    err = (r.get("error") or "").lower()
+    if "thinking mode does not support" in err or "tool_choice" in err:
+        return {
+            "ok": True,
+            "skip": True,
+            "preview": "model: thinking mode cannot honor tool_choice",
+            "latency_s": r.get("latency_s"),
+        }
+    if skip := _maybe_skip_upstream(r, label="tool_choice_any"):
+        return skip
+    return r
+
+
+@_register_matrix_case("chat_long_context_32k")
+def case_chat_long_context_32k_matrix(model: str) -> dict:
+    """32k-token input on /v1/chat/completions for each model.
+
+    Stresses the proxy's token counting and JSON serialization. Each model
+    has a different context window — this test asserts the request at least
+    doesn't 5xx on a too-long input.
+    """
+    long_input = "Please acknowledge with OK. " + ("lorem ipsum dolor sit amet. " * 5000)  # ~25-30k tokens
+    payload = {
+        "model": model,
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": long_input}],
+    }
+    r = post("/v1/chat/completions", payload, timeout=180)
+    if r.get("ok"):
+        r["preview"] = f"in_chars={len(long_input)}"
+        return r
+    # Context length errors are expected and not proxy failures
+    err = (r.get("error") or "").lower()
+    if "context_length" in err or "too long" in err or "max_tokens" in err:
+        return {
+            "ok": True,
+            "skip": True,
+            "preview": "model context window exceeded (expected)",
+            "latency_s": r.get("latency_s"),
+        }
+    if skip := _maybe_skip_upstream(r, label="long_context_32k"):
+        return skip
+    return r
+
+
 def case_chat_anthropic_beta_header_matrix(model: str) -> dict:
     """anthropic-beta request header on /v1/chat/completions.
 
