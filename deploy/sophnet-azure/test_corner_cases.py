@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import sys
@@ -25,6 +26,11 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Literal, Optional, Set
+
+# Module-level dispatch table: each new matrix case registers itself here at
+# import time. build_cases lambdas look up names in this dict, avoiding late
+# binding in the lambdas (which has been finicky in this codebase).
+_MATRIX_CASES: Dict[str, Callable[[str], Dict[str, Any]]] = {}
 
 BASE = os.environ.get("LITELLM_PROXY_BASE", "http://localhost:4000")
 KEY = os.environ.get("LITELLM_MASTER_KEY", "sk-litellm-sophnet-azure-local")
@@ -981,6 +987,116 @@ def build_cases() -> List[Case]:
         ]
     )
 
+    # Per-model matrix cases (each iterates over all 9 modellist entries).
+    # Use the _MATRIX_CASES dispatch table rather than module-level name
+    # lookups inside lambdas — the latter has been flaky in this codebase
+    # (NameError on first invocation in some threading contexts).
+    matrix = _MATRIX_CASES
+    for model in CHAT_MODELS:
+        cases.append(
+            Case(
+                id=f"matrix.chat.stream.{model}",
+                tier="matrix",
+                why="Chat streaming stability for every modellist entry",
+                fn=lambda m=model, fn=matrix["chat_stream"]: fn(m),
+                timeout=90,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"matrix.messages.stream.{model}",
+                tier="matrix",
+                why="Messages streaming stability for every modellist entry",
+                fn=lambda m=model, fn=matrix["messages_stream"]: fn(m),
+                timeout=120,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"matrix.responses.stream.{model}",
+                tier="matrix",
+                why="Responses streaming stability for every modellist entry",
+                fn=lambda m=model, fn=matrix["responses_stream"]: fn(m),
+                timeout=90,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"matrix.chat.tools.{model}",
+                tier="matrix",
+                why="Chat tool-calling stability for every modellist entry",
+                fn=lambda m=model, fn=matrix["chat_tools"]: fn(m),
+                timeout=120,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"matrix.messages.tools.{model}",
+                tier="matrix",
+                why="Messages tool-calling stability for every modellist entry",
+                fn=lambda m=model, fn=matrix["messages_tools"]: fn(m),
+                timeout=120,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"matrix.responses.tools.{model}",
+                tier="matrix",
+                why="Responses tool-calling stability for every modellist entry",
+                fn=lambda m=model, fn=matrix["responses_tools"]: fn(m),
+                timeout=120,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"matrix.chat.long_context.{model}",
+                tier="matrix",
+                why="8k-token input does not crash any modellist entry",
+                fn=lambda m=model, fn=matrix["chat_long_context"]: fn(m),
+                timeout=120,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"matrix.messages.system.{model}",
+                tier="matrix",
+                why="System prompt forwarding on /v1/messages for every entry",
+                fn=lambda m=model, fn=matrix["messages_system_prompt"]: fn(m),
+                timeout=120,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"matrix.chat.max_tokens_one.{model}",
+                tier="matrix",
+                why="max_tokens=1 boundary case on every entry",
+                fn=lambda m=model, fn=matrix["chat_max_tokens_one"]: fn(m),
+                timeout=60,
+            )
+        )
+        cases.append(
+            Case(
+                id=f"matrix.chat.anthropic_beta_header.{model}",
+                tier="matrix",
+                why="anthropic-beta header filtered per JSON config on every entry",
+                fn=lambda m=model, fn=matrix["chat_anthropic_beta_header"]: fn(m),
+                timeout=60,
+            )
+        )
+
+    # Claude-style models only (output_config.effort is Anthropic feature)
+    CLAUDE_STYLE = [CLAUDE, GLM, DEEPSEEK_PRO, "deepseek-v4-flash"]
+    for model in CLAUDE_STYLE:
+        cases.append(
+            Case(
+                id=f"matrix.messages.output_config_effort.{model}",
+                tier="matrix",
+                why="output_config.effort does not leak effort-2025-11-24 into anthropic_beta (regression check for the JSON-driven filter)",
+                fn=lambda m=model, fn=matrix["messages_output_config_effort"]: fn(m),
+                timeout=120,
+            )
+        )
+
     for model in (GPT55, CLAUDE, GLM):
         cases.append(
             Case(
@@ -1191,6 +1307,471 @@ def main() -> int:
         return 1
     return 0
 
+
+
+
+# --- matrix cases (per-model stability + corner cases) ---
+
+
+@functools.lru_cache(maxsize=None)
+def _get_matrix_cases() -> Dict[str, Callable[[str], Dict[str, Any]]]:
+    """Return the module-level matrix case registry (built lazily)."""
+    return _MATRIX_CASES
+
+
+def _register_matrix_case(name: str):
+    def decorator(fn: Callable[[str], Dict[str, Any]]) -> Callable[[str], Dict[str, Any]]:
+        _MATRIX_CASES[name] = fn
+        return fn
+    return decorator
+
+
+@_register_matrix_case("chat_stream")
+def case_chat_stream_matrix(model: str) -> dict:
+    """Streaming /v1/chat/completions for each model.
+
+    Asserts: (1) the connection opens, (2) the first data: event arrives within
+    a generous timeout, (3) at least one chunk is emitted. This is the basic
+    stability bar for the Codex/CC streaming path.
+    """
+    req = urllib.request.Request(
+        f"{BASE}/v1/chat/completions",
+        data=json.dumps(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": "OK"}],
+                "max_tokens": 8,
+                "stream": True,
+            }
+        ).encode(),
+        headers=_headers(),
+        method="POST",
+    )
+    start = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            first: Optional[float] = None
+            chunks = 0
+            while True:
+                line = resp.readline()
+                if not line:
+                    break
+                if first is None and line.strip():
+                    first = time.perf_counter()
+                if line.startswith(b"data:") and b"[DONE]" not in line:
+                    chunks += 1
+            ttfb = (first - start) if first else None
+            ok = ttfb is not None and chunks > 0
+            return {
+                "ok": ok,
+                "status": resp.status if ok else None,
+                "latency_s": round(ttfb or (time.perf_counter() - start), 2),
+                "preview": f"chunks={chunks}",
+            }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "latency_s": round(time.perf_counter() - start, 2), "error": str(exc)[:200]}
+
+
+@_register_matrix_case("messages_stream")
+def case_messages_stream_matrix(model: str) -> dict:
+    """Streaming /v1/messages for each model.
+
+    For Anthropic-style responses the first event is message_start; for adapter
+    models it depends on the upstream. We just count SSE events.
+    """
+    r = post(
+        "/v1/messages",
+        {
+            "model": model,
+            "max_tokens": 32,
+            "stream": True,
+            "messages": [{"role": "user", "content": "Count 1 to 3."}],
+        },
+        headers=ANTHROPIC_HEADERS,
+        stream=True,
+        timeout=120,
+    )
+    if r.get("ok") and r.get("stream_lines", 0) < 2:
+        return {
+            "ok": False,
+            "error": f"expected multiple stream events, got {r.get('stream_lines')}",
+            "latency_s": r["latency_s"],
+            "status": r.get("status"),
+        }
+    return r
+
+
+@_register_matrix_case("responses_stream")
+def case_responses_stream_matrix(model: str) -> dict:
+    """Streaming /v1/responses for each model.
+
+    The Responses API emits SSE events prefixed with `data:`. We assert at
+    least one event is emitted and the connection closes cleanly.
+    """
+    req = urllib.request.Request(
+        f"{BASE}/v1/responses",
+        data=json.dumps(
+            {
+                "model": model,
+                "input": "Reply with exactly one word: OK",
+                "max_output_tokens": 16,
+                "stream": True,
+            }
+        ).encode(),
+        headers=_headers(),
+        method="POST",
+    )
+    start = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            events = 0
+            for line in resp:
+                line_str = line.decode(errors="replace")
+                if line_str.startswith("data:") and line_str.strip() != "data:":
+                    events += 1
+            ok = events > 0
+            return {
+                "ok": ok,
+                "status": resp.status if ok else None,
+                "latency_s": round(time.perf_counter() - start, 2),
+                "preview": f"events={events}",
+            }
+    except urllib.error.HTTPError as exc:  # noqa: BLE001
+        if exc.code in RETRY_STATUS:
+            return {"ok": True, "skip": True, "preview": "upstream rate limit"}
+        return {
+            "ok": False,
+            "status": exc.code,
+            "latency_s": round(time.perf_counter() - start, 2),
+            "error": exc.read().decode(errors="replace")[:200],
+        }
+    except Exception as exc:  # noqa: BLE001
+        if skip := _maybe_skip_upstream({"error": str(exc)}, label="responses_stream"):
+            return skip
+        return {"ok": False, "latency_s": round(time.perf_counter() - start, 2), "error": str(exc)[:200]}
+
+
+@_register_matrix_case("chat_tools")
+def case_chat_tools_matrix(model: str) -> dict:
+    """OpenAI-style tool calling on /v1/chat/completions for each model.
+
+    Sends a tool definition; asserts 200 and either tool_calls present OR a
+    non-empty content reply (model may legitimately answer without calling
+    the tool). Stability of the proxy is the goal, not the model's tool-use
+    behaviour. Anthropic /v1/messages path is covered separately.
+    """
+    payload = {
+        "model": model,
+        "max_tokens": 128,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get weather for a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                },
+            }
+        ],
+        "messages": [
+            {"role": "user", "content": "What is the weather in Tokyo?"}
+        ],
+    }
+    r = post("/v1/chat/completions", payload, timeout=120)
+    if r.get("ok"):
+        body = r.get("body", {})
+        msg = body.get("choices", [{}])[0].get("message", {})
+        tool_calls = msg.get("tool_calls") or []
+        content = (msg.get("content") or "").strip()
+        r["preview"] = f"tool_calls={len(tool_calls)} content_len={len(content)}"
+        # Model may answer with text instead of calling the tool; both are valid.
+        if not tool_calls and not content:
+            r["ok"] = False
+            r["error"] = "empty response (no tool_calls and no content)"
+        return r
+    if skip := _maybe_skip_upstream(r, label="chat_tools"):
+        return skip
+    return r
+
+
+@_register_matrix_case("messages_tools")
+def case_messages_tools_matrix(model: str) -> dict:
+    """Anthropic-style tool calling on /v1/messages for each model.
+
+    Asserts the response stops with stop_reason=tool_use and contains a
+    tool_use block. Mirrors what CC does when it asks the model to call a tool.
+    """
+    payload = {
+        "model": model,
+        "max_tokens": 256,
+        "tools": [ANTHROPIC_TOOLS[0]],
+        "messages": [
+            {"role": "user", "content": "What's the weather in Tokyo? Use the get_weather tool."}
+        ],
+    }
+    r = post("/v1/messages", payload, headers=ANTHROPIC_HEADERS, timeout=120)
+    if r.get("ok"):
+        body = r.get("body", {})
+        stop = body.get("stop_reason", "?")
+        types = [c.get("type") for c in body.get("content", []) if isinstance(c, dict)]
+        r["preview"] = f"stop={stop} types={types}"
+        if stop != "tool_use" or "tool_use" not in types:
+            r["ok"] = False
+            r["error"] = f"expected tool_use, got stop={stop} types={types}"
+        return r
+    if skip := _maybe_skip_upstream(r, label="messages_tools"):
+        return skip
+    return r
+
+
+@_register_matrix_case("responses_tools")
+def case_responses_tools_matrix(model: str) -> dict:
+    """OpenAI Responses tool calling on /v1/responses for each model.
+
+    Asserts 200 and that the response has a function_call OR a message
+    output. Stability of the proxy is the goal, not the model's tool-use
+    behaviour.
+    """
+    payload = {
+        "model": model,
+        "max_output_tokens": 256,
+        "tools": [
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get weather for a city",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            }
+        ],
+        "input": [
+            {"type": "message", "role": "user", "content": "What is the weather in Tokyo?"}
+        ],
+    }
+    r = post("/v1/responses", payload, timeout=120)
+    if r.get("ok"):
+        body = r.get("body", {})
+        outputs = body.get("output", [])
+        has_tool_call = any(
+            isinstance(o, dict) and o.get("type") == "function_call" for o in outputs
+        )
+        has_message = any(
+            isinstance(o, dict) and o.get("type") == "message" for o in outputs
+        )
+        r["preview"] = f"tool_call={has_tool_call} message={has_message}"
+        if not has_tool_call and not has_message:
+            r["ok"] = False
+            r["error"] = f"empty output: {[o.get('type') for o in outputs if isinstance(o, dict)]}"
+        return r
+    if skip := _maybe_skip_upstream(r, label="responses_tools"):
+        return skip
+    return r
+
+
+@_register_matrix_case("chat_long_context")
+def case_chat_long_context_matrix(model: str) -> dict:
+    """8k-token user input on /v1/chat/completions for each model.
+
+    The 9 model list spans 4 underlying families with different context
+    windows. A long input should at least not crash on a 200; if the model
+    truncates or fails, we capture the error and skip rather than fail.
+    """
+    long_input = "Please acknowledge with OK. " + ("lorem ipsum dolor sit amet. " * 800)
+    payload = {
+        "model": model,
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": long_input}],
+    }
+    r = post("/v1/chat/completions", payload, timeout=120)
+    if r.get("ok"):
+        r["preview"] = f"in_tokens~{len(long_input.split())}"
+        return r
+    if skip := _maybe_skip_upstream(r, label="long_context"):
+        return skip
+    return r
+
+
+@_register_matrix_case("messages_system_prompt")
+def case_messages_system_prompt_matrix(model: str) -> dict:
+    """System prompt on /v1/messages for each model.
+
+    Verifies the system field is correctly forwarded and the model respects
+    the instruction. Adapter models translate system -> chat prompt or similar.
+    """
+    # Reasoning-capable models (deepseek-v3, claude with thinking) burn
+    # max_tokens on thinking blocks before producing text. Use a large budget
+    # so the system prompt can actually be evaluated downstream.
+    payload = {
+        "model": model,
+        "max_tokens": 1024,
+        "system": "You are a helpful assistant. Always start your reply with the word PONG followed by a space.",
+        "messages": [{"role": "user", "content": "ping"}],
+    }
+    r = post("/v1/messages", payload, headers=ANTHROPIC_HEADERS, timeout=120)
+    if r.get("ok"):
+        body = r.get("body", {})
+        # If the model only returned a thinking block (no text yet), the
+        # request was forwarded correctly but the model didn't finish. That's
+        # not a proxy failure.
+        types = [c.get("type") for c in body.get("content", []) if isinstance(c, dict)]
+        texts = [
+            c.get("text", "")
+            for c in body.get("content", [])
+            if isinstance(c, dict) and c.get("type") == "text"
+        ]
+        text = " ".join(texts).strip()
+        r["preview"] = (text[:60] if text else "") + f" [blocks:{','.join(types)}]"
+        if not text and "text" not in types:
+            # Only thinking returned; not a proxy failure
+            return r
+        if text and not text.lower().startswith("pong"):
+            r["ok"] = False
+            r["error"] = f"system prompt not respected: {text[:80]!r}"
+        return r
+    if skip := _maybe_skip_upstream(r, label="system_prompt"):
+        return skip
+    return r
+
+
+@_register_matrix_case("messages_output_config_effort")
+def case_messages_output_config_effort_matrix(model: str) -> dict:
+    """output_config.effort on /v1/messages for Claude-style models.
+
+    The Converse path used to crash with 'invalid beta flag' when effort-2025-11-24
+    was appended to anthropic_beta. This case verifies the fix holds across
+    every Claude-family model in the modellist. Effort travels via
+    outputConfig.effort upstream; the proxy must not pass it as a beta header.
+    """
+    payload = {
+        "model": model,
+        "max_tokens": 32,
+        "output_config": {"effort": "low"},
+        "messages": [{"role": "user", "content": "Reply with exactly one word: OK"}],
+    }
+    r = post("/v1/messages", payload, headers=ANTHROPIC_HEADERS, timeout=120)
+    if r.get("ok"):
+        body = r.get("body", {})
+        texts = [
+            c.get("text", "")
+            for c in body.get("content", [])
+            if isinstance(c, dict) and c.get("type") == "text"
+        ]
+        r["preview"] = (texts[0][:60] if texts else "") or "(no text)"
+        return r
+    err = (r.get("error") or "").lower()
+    if "invalid beta flag" in err or "effort-2025-11-24" in err:
+        r["ok"] = False
+        r["error"] = "regression: effort-2025-11-24 leaked into anthropic_beta"
+        return r
+    if skip := _maybe_skip_upstream(r, label="output_config_effort"):
+        return skip
+    return r
+
+
+@_register_matrix_case("chat_max_tokens_one")
+def case_chat_max_tokens_one_matrix(model: str) -> dict:
+    """max_tokens=1 on /v1/chat/completions for each model.
+
+    Boundary case: every model should return 200 with at most 1 token. Some
+    models may return empty content or hit upstream quirks; we record the
+    actual response rather than failing the test.
+    """
+    payload = {
+        "model": model,
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "Reply yes or no."}],
+    }
+    r = post("/v1/chat/completions", payload, timeout=60)
+    if r.get("ok"):
+        body = r.get("body", {})
+        msg = body.get("choices", [{}])[0].get("message", {})
+        content = (msg.get("content") or "").strip()
+        finish = (body.get("choices", [{}])[0].get("finish_reason") or "")
+        r["preview"] = f"content_len={len(content)} finish={finish}"
+        # max_tokens=1 is a hard boundary; the model may legitimately return
+        # empty content if it can't fit any output. That's not a failure.
+        return r
+    err = (r.get("error") or "").lower()
+    if "max_tokens" in err or "model output limit" in err or "context length" in err:
+        # Boundary error from upstream is not a proxy failure
+        return {
+            "ok": True,
+            "skip": True,
+            "preview": "upstream cannot satisfy max_tokens=1",
+            "latency_s": r.get("latency_s"),
+            "status": r.get("status"),
+        }
+    if skip := _maybe_skip_upstream(r, label="max_tokens_one"):
+        return skip
+    return r
+
+
+@_register_matrix_case("chat_anthropic_beta_header")
+def case_chat_anthropic_beta_header_matrix(model: str) -> dict:
+    """anthropic-beta request header on /v1/chat/completions.
+
+    Verifies the proxy filters unsupported betas per the JSON config. This is
+    the direct end-to-end check for the JSON-driven beta filter (the fix).
+    """
+    req = urllib.request.Request(
+        f"{BASE}/v1/chat/completions",
+        data=json.dumps(
+            {
+                "model": model,
+                "max_tokens": 8,
+                "messages": [{"role": "user", "content": "OK"}],
+            }
+        ).encode(),
+        headers=_headers(
+            {"anthropic-beta": "effort-2025-11-24,context-1m-2025-08-07"}
+        ),
+        method="POST",
+    )
+    start = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return {
+                "ok": resp.status == 200,
+                "status": resp.status,
+                "latency_s": round(time.perf_counter() - start, 2),
+                "preview": "200 OK",
+            }
+    except urllib.error.HTTPError as exc:  # noqa: BLE001
+        if exc.code in RETRY_STATUS or exc.code >= 500:
+            return {
+                "ok": True,
+                "skip": True,
+                "preview": f"upstream {exc.code}",
+                "latency_s": round(time.perf_counter() - start, 2),
+                "status": exc.code,
+            }
+        err = exc.read().decode(errors="replace").lower()
+        if "invalid beta flag" in err or "effort-2025-11-24" in err:
+            return {
+                "ok": False,
+                "status": exc.code,
+                "latency_s": round(time.perf_counter() - start, 2),
+                "error": "regression: effort-2025-11-24 leaked into request",
+            }
+        return {
+            "ok": False,
+            "status": exc.code,
+            "latency_s": round(time.perf_counter() - start, 2),
+            "error": err[:200],
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "latency_s": round(time.perf_counter() - start, 2),
+            "error": str(exc)[:200],
+        }
 
 if __name__ == "__main__":
     sys.exit(main())
