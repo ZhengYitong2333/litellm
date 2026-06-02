@@ -317,9 +317,122 @@ class LiteLLMCompletionResponsesConfig:
         messages = LiteLLMCompletionResponsesConfig._ensure_assistant_tool_calls_have_tool_results(
             messages=messages
         )
-        return LiteLLMCompletionResponsesConfig._ensure_assistant_messages_have_content_or_tool_calls(
+        messages = LiteLLMCompletionResponsesConfig._ensure_assistant_messages_have_content_or_tool_calls(
             messages=messages
         )
+        return (
+            LiteLLMCompletionResponsesConfig._sanitize_tool_call_arguments_in_messages(
+                messages=messages
+            )
+        )
+
+    @staticmethod
+    def _normalize_tool_call_arguments_string(
+        arguments: Any,
+        *,
+        tool_name: Optional[str] = None,
+    ) -> str:
+        """
+        Ensure tool call ``arguments`` is a valid JSON string for strict OpenAI-compatible
+        providers (e.g. MiniMax) that reject malformed history payloads.
+        """
+        import json
+
+        from litellm._logging import verbose_logger
+        from litellm.litellm_core_utils.prompt_templates.common_utils import (
+            parse_tool_call_arguments,
+        )
+
+        if isinstance(arguments, dict):
+            return json.dumps(arguments, ensure_ascii=False)
+        if not isinstance(arguments, str) or not arguments.strip():
+            return "{}"
+
+        try:
+            return json.dumps(json.loads(arguments), ensure_ascii=False)
+        except json.JSONDecodeError:
+            try:
+                parsed = parse_tool_call_arguments(
+                    arguments,
+                    tool_name=tool_name,
+                    context="Responses API bridge",
+                )
+                return json.dumps(parsed, ensure_ascii=False)
+            except ValueError:
+                verbose_logger.warning(
+                    "Replacing invalid tool call arguments with {} for tool '%s' "
+                    "(%d chars): %.200s%s",
+                    tool_name or "<unknown>",
+                    len(arguments),
+                    arguments,
+                    "..." if len(arguments) > 200 else "",
+                )
+                return "{}"
+
+    @staticmethod
+    def _set_tool_call_arguments(tool_call: Any, arguments: str) -> None:
+        function_raw = LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+            tool_call, "function"
+        )
+        if isinstance(tool_call, dict):
+            if isinstance(function_raw, dict):
+                tool_call["function"] = {**function_raw, "arguments": arguments}
+            elif function_raw is not None:
+                setattr(function_raw, "arguments", arguments)
+            return
+        if function_raw is not None:
+            if isinstance(function_raw, dict):
+                setattr(tool_call, "function", {**function_raw, "arguments": arguments})
+            else:
+                setattr(function_raw, "arguments", arguments)
+
+    @staticmethod
+    def _sanitize_tool_call_arguments_in_messages(messages: List[Any]) -> List[Any]:
+        """Normalize assistant tool_calls[].function.arguments across message history."""
+        for message in messages:
+            role = LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+                message, "role"
+            )
+            if role != "assistant":
+                continue
+
+            tool_calls = LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+                message, "tool_calls"
+            )
+            if not isinstance(tool_calls, list):
+                continue
+
+            for tool_call in tool_calls:
+                function_raw = (
+                    LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+                        tool_call, "function"
+                    )
+                )
+                if function_raw is None:
+                    continue
+
+                tool_name_raw = (
+                    LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+                        function_raw, "name"
+                    )
+                )
+                old_arguments = (
+                    LiteLLMCompletionResponsesConfig._get_mapping_or_attr_value(
+                        function_raw, "arguments"
+                    )
+                )
+                new_arguments = LiteLLMCompletionResponsesConfig._normalize_tool_call_arguments_string(
+                    old_arguments,
+                    tool_name=(
+                        str(tool_name_raw) if tool_name_raw is not None else None
+                    ),
+                )
+                if new_arguments != old_arguments:
+                    LiteLLMCompletionResponsesConfig._set_tool_call_arguments(
+                        tool_call, new_arguments
+                    )
+
+        return messages
 
     @staticmethod
     async def async_responses_api_session_handler(

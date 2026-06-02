@@ -1625,6 +1625,107 @@ class TestToolTransformation:
         assert fixed[assistant_idx + 1]["tool_call_id"] == "call_missing"
 
 
+class TestSanitizeToolCallArguments:
+    def test_empty_arguments_become_empty_object(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": ""},
+                    }
+                ],
+            }
+        ]
+
+        fixed = (
+            LiteLLMCompletionResponsesConfig._sanitize_tool_call_arguments_in_messages(
+                messages=messages
+            )
+        )
+
+        assert fixed[0]["tool_calls"][0]["function"]["arguments"] == "{}"
+
+    def test_invalid_json_replaced_with_empty_object(self):
+        bad_args = '{"command": ["echo", "hi"'  # truncated JSON
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_function_nh7e6a38ugaz_1",
+                        "type": "function",
+                        "function": {"name": "Bash", "arguments": bad_args},
+                    }
+                ],
+            }
+        ]
+
+        fixed = (
+            LiteLLMCompletionResponsesConfig._sanitize_tool_call_arguments_in_messages(
+                messages=messages
+            )
+        )
+
+        args = fixed[0]["tool_calls"][0]["function"]["arguments"]
+        import json
+
+        json.loads(args)
+
+    def test_valid_json_is_canonicalized(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "London"}',
+                        },
+                    }
+                ],
+            }
+        ]
+
+        fixed = (
+            LiteLLMCompletionResponsesConfig._sanitize_tool_call_arguments_in_messages(
+                messages=messages
+            )
+        )
+
+        assert (
+            fixed[0]["tool_calls"][0]["function"]["arguments"] == '{"city": "London"}'
+        )
+
+    def test_normalize_converted_messages_sanitizes_function_call_history(self):
+        input_items = [
+            {"type": "message", "role": "user", "content": "run"},
+            {
+                "type": "function_call",
+                "call_id": "call_function_nh7e6a38ugaz_1",
+                "name": "Bash",
+                "arguments": "",
+            },
+        ]
+
+        messages = LiteLLMCompletionResponsesConfig._normalize_converted_messages_for_tool_calling(
+            messages=LiteLLMCompletionResponsesConfig._transform_response_input_param_to_chat_completion_message(
+                input=input_items
+            ),
+            tools=[],
+        )
+
+        assistant = next(m for m in messages if m.get("role") == "assistant")
+        assert assistant["tool_calls"][0]["function"]["arguments"] == "{}"
+
+
 class TestUsageTransformation:
     """Test cases for usage transformation from Chat Completion to Responses API format"""
 
