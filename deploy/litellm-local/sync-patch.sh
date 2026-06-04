@@ -14,7 +14,7 @@ PATHS=(
   responses/litellm_completion_transformation/transformation.py
 )
 
-# main-stable 镜像不含 openai_compatible_request_utils；以下文件保持仓库内兼容版本，勿从分支覆盖
+# 以下 OpenAI patch 保持仓库内兼容版本，勿从分支覆盖
 # llms/openai/openai.py
 # llms/openai/chat/gpt_transformation.py
 
