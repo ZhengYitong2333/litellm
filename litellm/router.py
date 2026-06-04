@@ -2540,11 +2540,94 @@ class Router:
                 await self._async_generator.aclose()
 
         async def stream_with_fallbacks():
+            from litellm.types.llms.openai import (
+                ResponsesAPIStreamEvents as _StreamEvents,
+            )
+
             fallback_response = None
+            visible_text: List[str] = []
+            yielded_visible_output = False
+
+            def _is_visible_output_event(event: Any) -> bool:
+                """
+                True for events that put rendered text in front of the user.
+                Used to decide whether a mid-stream failure can safely retry
+                without duplicating output the client already displayed.
+                Lifecycle events (response.created / in_progress, output_item.added
+                with no content yet) and reasoning summaries do not count.
+                """
+                event_type = getattr(event, "type", None)
+                return event_type in (
+                    _StreamEvents.OUTPUT_TEXT_DELTA,
+                    _StreamEvents.OUTPUT_TEXT_DONE,
+                    _StreamEvents.CONTENT_PART_DONE,
+                    _StreamEvents.OUTPUT_ITEM_DONE,
+                )
+
+            def _record_visible_text(event: Any) -> None:
+                """Best-effort: collect output_text deltas/dones so a partial
+                continuation prompt to the fallback model is non-empty."""
+                event_type = getattr(event, "type", None)
+                if event_type == _StreamEvents.OUTPUT_TEXT_DELTA:
+                    delta = getattr(event, "delta", None)
+                    if isinstance(delta, str):
+                        visible_text.append(delta)
+
+            def _wrap_as_fallback_error(exc: Exception) -> "MidStreamFallbackError":
+                """
+                Convert a retriable streaming exception (rate-limit /
+                service-unavailable / connection error) raised by the native
+                Responses iterator into MidStreamFallbackError so the
+                fallback path below can engage. Non-retriable client errors
+                (4xx except 429) are surfaced unchanged.
+                """
+                generated = "".join(visible_text)
+                return MidStreamFallbackError(
+                    message=str(exc),
+                    model=getattr(source_iterator, "model", None) or "",
+                    llm_provider=getattr(source_iterator, "custom_llm_provider", None)
+                    or "",
+                    original_exception=exc,
+                    generated_content=generated,
+                    is_pre_first_chunk=not yielded_visible_output,
+                )
+
+            def _should_engage_fallback(exc: Exception) -> bool:
+                """
+                Retry on transient/transport failures only. If the client
+                already saw visible text we still retry (chat path does the
+                same), but we hand the partial content to the fallback so
+                it can continue rather than restart.
+                """
+                if isinstance(exc, MidStreamFallbackError):
+                    return True
+                if isinstance(
+                    exc,
+                    (
+                        litellm.RateLimitError,
+                        litellm.ServiceUnavailableError,
+                        litellm.APIConnectionError,
+                        litellm.Timeout,
+                        litellm.InternalServerError,
+                    ),
+                ):
+                    return True
+                return False
+
             try:
                 async for item in source_iterator:
+                    if _is_visible_output_event(item):
+                        yielded_visible_output = True
+                    _record_visible_text(item)
                     yield item
-            except MidStreamFallbackError as e:
+            except Exception as raw_exc:
+                if not _should_engage_fallback(raw_exc):
+                    raise
+                e = (
+                    raw_exc
+                    if isinstance(raw_exc, MidStreamFallbackError)
+                    else _wrap_as_fallback_error(raw_exc)
+                )
                 partial_usage = Router._extract_partial_responses_usage(source_iterator)
                 try:
                     model_group = cast(str, initial_kwargs.get("model"))

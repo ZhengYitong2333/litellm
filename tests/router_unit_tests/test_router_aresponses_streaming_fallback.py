@@ -15,14 +15,17 @@ import sys
 from typing import Any, AsyncIterator, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 sys.path.insert(0, os.path.abspath("../.."))
 
+import litellm
 from litellm import Router
 from litellm.types.llms.openai import (
     ResponseAPIUsage,
     ResponseCompletedEvent,
+    ResponseCreatedEvent,
     ResponsesAPIResponse,
     ResponsesAPIStreamEvents,
 )
@@ -209,6 +212,94 @@ async def test_aresponses_streaming_iterator_passthrough():
     collected = [ev async for ev in wrapper]
     assert len(collected) == 1
     assert collected[0].type == ResponsesAPIStreamEvents.RESPONSE_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_aresponses_streaming_iterator_falls_back_on_pre_content_rate_limit():
+    """
+    Native Responses path: a rate-limit error after lifecycle events but before
+    any visible output should be converted into a streaming fallback.
+    """
+
+    created = ResponseCreatedEvent.model_construct(
+        type=ResponsesAPIStreamEvents.RESPONSE_CREATED,
+        response=ResponsesAPIResponse.model_construct(id="resp_created"),
+    )
+    fallback_completed = _make_completed_event(3, 2, 5)
+
+    class _FakeSource:
+        def __init__(self) -> None:
+            self._i = 0
+            self._events = [created]
+            self.completed_response = None
+            self.response = MagicMock()
+            self.model = "openai/gpt-4o-mini"
+            self.logging_obj = MagicMock()
+            self.responses_api_provider_config = MagicMock()
+            self.start_time = 0.0
+            self.litellm_metadata = {}
+            self.custom_llm_provider = "openai"
+            self.request_data = {}
+            self.call_type = "aresponses"
+            self._hidden_params: dict = {}
+
+        def __aiter__(self) -> AsyncIterator[Any]:
+            return self
+
+        async def __anext__(self):
+            if self._i < len(self._events):
+                event = self._events[self._i]
+                self._i += 1
+                return event
+            raise litellm.RateLimitError(
+                message="Too Many Requests",
+                model=self.model,
+                llm_provider=self.custom_llm_provider,
+                response=httpx.Response(
+                    429,
+                    request=httpx.Request("POST", "https://api.example.test"),
+                ),
+            )
+
+        async def aclose(self):
+            return None
+
+    class _FallbackIterator:
+        def __init__(self) -> None:
+            self._yielded = False
+
+        def __aiter__(self) -> AsyncIterator[Any]:
+            return self
+
+        async def __anext__(self):
+            if self._yielded:
+                raise StopAsyncIteration
+            self._yielded = True
+            return fallback_completed
+
+        async def aclose(self):
+            return None
+
+    router = _make_router()
+    source = _FakeSource()
+    fallback_stream = _FallbackIterator()
+
+    with patch.object(
+        router,
+        "async_function_with_fallbacks_common_utils",
+        new=AsyncMock(return_value=fallback_stream),
+    ) as mock_fallback:
+        wrapper = await router._aresponses_streaming_iterator(
+            source,
+            initial_kwargs={"model": "primary", "input": "hello"},
+        )
+        collected = [event async for event in wrapper]
+
+    assert [event.type for event in collected] == [
+        ResponsesAPIStreamEvents.RESPONSE_CREATED,
+        ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
+    ]
+    mock_fallback.assert_awaited_once()
 
 
 # -------- _aresponses_with_streaming_fallbacks --------
