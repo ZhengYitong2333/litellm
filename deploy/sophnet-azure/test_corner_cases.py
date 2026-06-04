@@ -44,6 +44,7 @@ CHAT_MODELS = [
     "sophnet-gpt-5.5",
     "sophnet-deepseekv4-pro",
     "sophnet-deepseekv4-flash",
+    "sophnet-minimax-m3",
     "sophnet-claude-opus-4-7",
     "azure-gpt-5.5",
     "azure-gpt-5.4",
@@ -1368,8 +1369,6 @@ def main() -> int:
     return 0
 
 
-
-
 # --- matrix cases (per-model stability + corner cases) ---
 
 
@@ -1380,9 +1379,12 @@ def _get_matrix_cases() -> Dict[str, Callable[[str], Dict[str, Any]]]:
 
 
 def _register_matrix_case(name: str):
-    def decorator(fn: Callable[[str], Dict[str, Any]]) -> Callable[[str], Dict[str, Any]]:
+    def decorator(
+        fn: Callable[[str], Dict[str, Any]],
+    ) -> Callable[[str], Dict[str, Any]]:
         _MATRIX_CASES[name] = fn
         return fn
+
     return decorator
 
 
@@ -1429,7 +1431,11 @@ def case_chat_stream_matrix(model: str) -> dict:
                 "preview": f"chunks={chunks}",
             }
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "latency_s": round(time.perf_counter() - start, 2), "error": str(exc)[:200]}
+        return {
+            "ok": False,
+            "latency_s": round(time.perf_counter() - start, 2),
+            "error": str(exc)[:200],
+        }
 
 
 @_register_matrix_case("messages_stream")
@@ -1508,7 +1514,11 @@ def case_responses_stream_matrix(model: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         if skip := _maybe_skip_upstream({"error": str(exc)}, label="responses_stream"):
             return skip
-        return {"ok": False, "latency_s": round(time.perf_counter() - start, 2), "error": str(exc)[:200]}
+        return {
+            "ok": False,
+            "latency_s": round(time.perf_counter() - start, 2),
+            "error": str(exc)[:200],
+        }
 
 
 @_register_matrix_case("chat_tools")
@@ -1537,9 +1547,7 @@ def case_chat_tools_matrix(model: str) -> dict:
                 },
             }
         ],
-        "messages": [
-            {"role": "user", "content": "What is the weather in Tokyo?"}
-        ],
+        "messages": [{"role": "user", "content": "What is the weather in Tokyo?"}],
     }
     r = post("/v1/chat/completions", payload, timeout=120)
     if r.get("ok"):
@@ -1570,7 +1578,10 @@ def case_messages_tools_matrix(model: str) -> dict:
         "max_tokens": 256,
         "tools": [ANTHROPIC_TOOLS[0]],
         "messages": [
-            {"role": "user", "content": "What's the weather in Tokyo? Use the get_weather tool."}
+            {
+                "role": "user",
+                "content": "What's the weather in Tokyo? Use the get_weather tool.",
+            }
         ],
     }
     r = post("/v1/messages", payload, headers=ANTHROPIC_HEADERS, timeout=120)
@@ -1612,7 +1623,11 @@ def case_responses_tools_matrix(model: str) -> dict:
             }
         ],
         "input": [
-            {"type": "message", "role": "user", "content": "What is the weather in Tokyo?"}
+            {
+                "type": "message",
+                "role": "user",
+                "content": "What is the weather in Tokyo?",
+            }
         ],
     }
     r = post("/v1/responses", payload, timeout=120)
@@ -1628,7 +1643,9 @@ def case_responses_tools_matrix(model: str) -> dict:
         r["preview"] = f"tool_call={has_tool_call} message={has_message}"
         if not has_tool_call and not has_message:
             r["ok"] = False
-            r["error"] = f"empty output: {[o.get('type') for o in outputs if isinstance(o, dict)]}"
+            r["error"] = (
+                f"empty output: {[o.get('type') for o in outputs if isinstance(o, dict)]}"
+            )
         return r
     if skip := _maybe_skip_upstream(r, label="responses_tools"):
         return skip
@@ -1753,7 +1770,7 @@ def case_chat_max_tokens_one_matrix(model: str) -> dict:
         body = r.get("body", {})
         msg = body.get("choices", [{}])[0].get("message", {})
         content = (msg.get("content") or "").strip()
-        finish = (body.get("choices", [{}])[0].get("finish_reason") or "")
+        finish = body.get("choices", [{}])[0].get("finish_reason") or ""
         r["preview"] = f"content_len={len(content)} finish={finish}"
         # max_tokens=1 is a hard boundary; the model may legitimately return
         # empty content if it can't fit any output. That's not a failure.
@@ -1774,8 +1791,6 @@ def case_chat_max_tokens_one_matrix(model: str) -> dict:
 
 
 @_register_matrix_case("chat_anthropic_beta_header")
-
-
 @_register_matrix_case("chat_stream_tools")
 def case_chat_stream_tools_matrix(model: str) -> dict:
     """Streaming + tool calling on /v1/chat/completions for each model.
@@ -1802,9 +1817,7 @@ def case_chat_stream_tools_matrix(model: str) -> dict:
                 },
             }
         ],
-        "messages": [
-            {"role": "user", "content": "Weather in Tokyo? Use the tool."}
-        ],
+        "messages": [{"role": "user", "content": "Weather in Tokyo? Use the tool."}],
     }
     req = urllib.request.Request(
         f"{BASE}/v1/chat/completions",
@@ -1831,9 +1844,16 @@ def case_chat_stream_tools_matrix(model: str) -> dict:
     except urllib.error.HTTPError as exc:  # noqa: BLE001
         if exc.code in RETRY_STATUS or exc.code >= 500:
             return {"ok": True, "skip": True, "preview": f"upstream {exc.code}"}
-        if skip := _maybe_skip_upstream({"error": exc.read().decode(errors="replace")[:200]}, label="chat_stream_tools"):
+        if skip := _maybe_skip_upstream(
+            {"error": exc.read().decode(errors="replace")[:200]},
+            label="chat_stream_tools",
+        ):
             return skip
-        return {"ok": False, "status": exc.code, "error": exc.read().decode(errors="replace")[:200]}
+        return {
+            "ok": False,
+            "status": exc.code,
+            "error": exc.read().decode(errors="replace")[:200],
+        }
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)[:200]}
 
@@ -1850,9 +1870,7 @@ def case_messages_stream_tools_matrix(model: str) -> dict:
         "max_tokens": 256,
         "stream": True,
         "tools": [ANTHROPIC_TOOLS[0]],
-        "messages": [
-            {"role": "user", "content": "Weather in Tokyo? Use the tool."}
-        ],
+        "messages": [{"role": "user", "content": "Weather in Tokyo? Use the tool."}],
     }
     req = urllib.request.Request(
         f"{BASE}/v1/messages",
@@ -1916,7 +1934,11 @@ def case_responses_stream_tools_matrix(model: str) -> dict:
             }
         ],
         "input": [
-            {"type": "message", "role": "user", "content": "Weather in Tokyo? Use the tool."}
+            {
+                "type": "message",
+                "role": "user",
+                "content": "Weather in Tokyo? Use the tool.",
+            }
         ],
     }
     req = urllib.request.Request(
@@ -1944,9 +1966,16 @@ def case_responses_stream_tools_matrix(model: str) -> dict:
     except urllib.error.HTTPError as exc:  # noqa: BLE001
         if exc.code in RETRY_STATUS or exc.code >= 500:
             return {"ok": True, "skip": True, "preview": f"upstream {exc.code}"}
-        if skip := _maybe_skip_upstream({"error": exc.read().decode(errors="replace")[:200]}, label="responses_stream_tools"):
+        if skip := _maybe_skip_upstream(
+            {"error": exc.read().decode(errors="replace")[:200]},
+            label="responses_stream_tools",
+        ):
             return skip
-        return {"ok": False, "status": exc.code, "error": exc.read().decode(errors="replace")[:200]}
+        return {
+            "ok": False,
+            "status": exc.code,
+            "error": exc.read().decode(errors="replace")[:200],
+        }
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)[:200]}
 
@@ -1997,7 +2026,9 @@ def case_chat_long_context_32k_matrix(model: str) -> dict:
     has a different context window — this test asserts the request at least
     doesn't 5xx on a too-long input.
     """
-    long_input = "Please acknowledge with OK. " + ("lorem ipsum dolor sit amet. " * 5000)  # ~25-30k tokens
+    long_input = "Please acknowledge with OK. " + (
+        "lorem ipsum dolor sit amet. " * 5000
+    )  # ~25-30k tokens
     payload = {
         "model": model,
         "max_tokens": 8,
@@ -2036,9 +2067,7 @@ def case_chat_anthropic_beta_header_matrix(model: str) -> dict:
                 "messages": [{"role": "user", "content": "OK"}],
             }
         ).encode(),
-        headers=_headers(
-            {"anthropic-beta": "effort-2025-11-24,context-1m-2025-08-07"}
-        ),
+        headers=_headers({"anthropic-beta": "effort-2025-11-24,context-1m-2025-08-07"}),
         method="POST",
     )
     start = time.perf_counter()
@@ -2081,7 +2110,6 @@ def case_chat_anthropic_beta_header_matrix(model: str) -> dict:
         }
 
 
-
 @_register_matrix_case("responses_empty_input_handling")
 def case_responses_empty_input_handling(model: str) -> dict:
     """How the proxy handles empty/malformed Codex /v1/responses input.
@@ -2110,6 +2138,7 @@ def case_responses_empty_input_handling(model: str) -> dict:
             elapsed = time.perf_counter() - start
             text = raw.decode(errors="replace")
             import re
+
             # Get the final non-empty text. Match all occurrences and take
             # the last non-empty one. The first match is usually the early
             # response.text.text="" placeholder.
@@ -2154,6 +2183,7 @@ def case_responses_empty_input_handling(model: str) -> dict:
         }
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)[:200]}
+
 
 if __name__ == "__main__":
     sys.exit(main())

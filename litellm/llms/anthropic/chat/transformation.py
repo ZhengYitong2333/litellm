@@ -94,7 +94,11 @@ from litellm.utils import (
 from ..common_utils import (
     AnthropicError,
     AnthropicModelInfo,
+    _is_official_anthropic_api_base,
+    infer_gateway_api_base_for_tool_sanitize,
     process_anthropic_headers,
+    sanitize_anthropic_messages_for_upstream,
+    sanitize_anthropic_tools_for_upstream,
     strip_advisor_blocks_from_messages,
 )
 
@@ -650,7 +654,17 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         if tool["type"] == "function" or tool["type"] == "custom":
             _function = tool.get("function")
             if isinstance(_function, dict):
-                _tool_name = _function["name"]
+                _tool_name = _function.get("name")
+                if not isinstance(_tool_name, str) or not _tool_name:
+                    # Anthropic-compatible gateways (Sophnet/MiniMax) reject any
+                    # tool whose name is empty with "function name or parameters
+                    # is empty (2013)". Drop instead of forwarding name="".
+                    litellm.verbose_logger.warning(
+                        "AnthropicConfig._map_tool_helper: dropping tool with "
+                        "empty function.name to avoid upstream 2013. tool=%r",
+                        tool,
+                    )
+                    return None, None
                 _description = _function.get("description")
                 _input_schema: dict = _function.get(
                     "parameters",
@@ -1175,6 +1189,48 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             if isinstance(original, str) and original:
                 original_names.append(original)
         return _build_anthropic_tool_name_maps(original_names)
+
+    @staticmethod
+    def _fill_empty_custom_tool_names(optional_params: Dict[str, Any]) -> None:
+        """Backfill placeholder names for ``custom`` tools that have an empty name.
+
+        Anthropic (and Anthropic-compatible gateways such as Sophnet/MiniMax)
+        reject any tool whose ``name`` is empty -- MiniMax returns
+        ``invalid params, function name or parameters is empty (2013)``.
+
+        Codex/Responses tool conversion can yield an empty-named function tool
+        (``transform_responses_api_tools_to_chat_completion_tools`` uses
+        ``typed_tool.get("name") or ""``). Rather than 400 the whole request,
+        assign a deterministic placeholder so the upstream accepts it. We log a
+        warning with the offending tool so the empty-name source can be traced.
+        """
+        tools = optional_params.get("tools")
+        if not isinstance(tools, list) or not tools:
+            return
+
+        new_tools: List[Any] = []
+        changed = False
+        placeholder_idx = 0
+        for tool in tools:
+            if isinstance(tool, dict) and tool.get("type") == "custom":
+                name = tool.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    placeholder = f"litellm_unnamed_tool_{placeholder_idx}"
+                    placeholder_idx += 1
+                    litellm.verbose_logger.warning(
+                        "AnthropicConfig: custom tool has empty name; assigning "
+                        "placeholder %r to avoid upstream 'function name is empty' "
+                        "(2013). tool=%r",
+                        placeholder,
+                        tool,
+                    )
+                    new_tools.append({**tool, "name": placeholder})
+                    changed = True
+                    continue
+            new_tools.append(tool)
+
+        if changed:
+            optional_params["tools"] = new_tools
 
     @staticmethod
     def _sanitize_tool_names_in_request(
@@ -2005,8 +2061,21 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         )
 
         strict_sanitize = self._requires_anthropic_request_sanitize(model)
+        effective_api_base = infer_gateway_api_base_for_tool_sanitize(
+            model=model,
+            api_base=(
+                litellm_params.get("api_base")
+                if isinstance(litellm_params, dict)
+                else None
+            ),
+        )
         if strict_sanitize:
             messages = self._sanitize_request_messages(messages)
+            messages = sanitize_anthropic_messages_for_upstream(
+                messages=messages,
+                api_base=effective_api_base,
+                model=model,
+            )
 
         if (
             "tools" not in optional_params
@@ -2068,6 +2137,12 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         # incorrectly retyped to ``foo/bar`` on the response side.
         # See _build_anthropic_tool_name_maps for the collision-handling
         # rules and rationale.
+        # Backfill empty custom-tool names BEFORE name sanitization. An empty
+        # name otherwise survives to the wire and Anthropic-compatible gateways
+        # (Sophnet/MiniMax) 400 with "function name or parameters is empty
+        # (2013)". See _fill_empty_custom_tool_names for the rationale.
+        self._fill_empty_custom_tool_names(optional_params)
+
         _name_forward_map, _name_reverse_map = self._sanitize_tool_names_in_request(
             optional_params=optional_params,
         )
@@ -2147,6 +2222,28 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
 
         # Remove internal LiteLLM parameters that should not be sent to Anthropic API
         optional_params.pop("is_vertex_request", None)
+
+        # Final gateway sanitization. The earlier ``strict_sanitize`` block is
+        # gated by ``requires_anthropic_request_sanitize(model)`` (covers GLM
+        # etc. via model_prices). Anthropic-compatible third-party gateways like
+        # Sophnet/MiniMax also reject empty tool names, empty input schemas,
+        # empty tool_use blocks, etc. (error 2013). Apply the same final
+        # sanitizers whenever api_base resolves to a non-official Anthropic
+        # endpoint -- regardless of model-map gating -- so the Responses ->
+        # chat bridge cannot leak invalid tool/message shapes upstream.
+        if not _is_official_anthropic_api_base(effective_api_base):
+            anthropic_messages = sanitize_anthropic_messages_for_upstream(
+                messages=anthropic_messages,
+                api_base=effective_api_base,
+                model=model,
+            )
+            _final_tools = optional_params.get("tools")
+            if isinstance(_final_tools, list):
+                optional_params["tools"] = sanitize_anthropic_tools_for_upstream(
+                    _final_tools,
+                    api_base=effective_api_base,
+                    model=model,
+                )
 
         data = {
             "model": model,

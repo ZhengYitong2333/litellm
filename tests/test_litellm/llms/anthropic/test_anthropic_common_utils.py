@@ -1524,6 +1524,49 @@ class TestAnthropicThinkingSignatureSelfHeal:
         assert out[1]["content"][0]["type"] == "tool_result"
         assert out[1]["content"][0]["tool_use_id"] == "toolu_x"
 
+    def test_sanitize_anthropic_messages_normalizes_empty_tool_use_name_for_minimax(
+        self,
+    ):
+        from litellm.llms.anthropic.common_utils import (
+            sanitize_anthropic_messages_for_upstream,
+        )
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "toolu_empty", "name": "", "input": None}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_empty",
+                        "content": "ok",
+                    }
+                ],
+            },
+        ]
+        out = sanitize_anthropic_messages_for_upstream(
+            msgs,
+            model="sophnet-minimax-m3",
+        )
+        tool_use = out[0]["content"][0]
+        assert tool_use["name"] == "litellm_unnamed_tool_0"
+        assert tool_use["input"] == {}
+
+    def test_infer_gateway_api_base_for_minimax_alias_without_sophnet_prefix(self):
+        from litellm.llms.anthropic.common_utils import (
+            infer_gateway_api_base_for_tool_sanitize,
+        )
+
+        assert (
+            infer_gateway_api_base_for_tool_sanitize(model="minimax-m3")
+            == "https://www.sophnet.com/api/open-apis/anthropic"
+        )
+
     def test_sanitize_anthropic_tools_for_sophnet_drops_computer_and_shell(self):
         from litellm.llms.anthropic.common_utils import (
             sanitize_anthropic_tools_for_upstream,
@@ -1557,7 +1600,10 @@ class TestAnthropicThinkingSignatureSelfHeal:
         assert len(out) == 1
         assert out[0]["name"] == "get_weather"
 
-    def test_sanitize_anthropic_tools_for_sophnet_normalizes_web_search_name(self):
+    def test_sanitize_anthropic_tools_for_sophnet_drops_web_search_server_tool(self):
+        """Anthropic-native ``web_search_*`` server tools cannot be executed by
+        third-party gateways and Sophnet/MiniMax rejects them with error 2013.
+        """
         from litellm.llms.anthropic.common_utils import (
             sanitize_anthropic_tools_for_upstream,
         )
@@ -1575,13 +1621,105 @@ class TestAnthropicThinkingSignatureSelfHeal:
             model="claude-opus-4-7",
         )
 
-        assert out == [
+        assert out == []
+
+    def test_sanitize_anthropic_tools_for_sophnet_drops_empty_function_name(self):
+        from litellm.llms.anthropic.common_utils import (
+            sanitize_anthropic_tools_for_upstream,
+        )
+
+        tools = [
             {
-                "type": "web_search_20250305",
-                "name": "web_search",
-                "max_uses": 5,
+                "name": "Bash",
+                "description": "Run shell",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                },
+            },
+            {
+                "type": "custom",
+                "name": "",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+            {
+                "type": "function",
+                "function": {"name": "", "parameters": {"type": "object"}},
+            },
+        ]
+        out = sanitize_anthropic_tools_for_upstream(
+            tools,
+            api_base="https://www.sophnet.com/api/open-apis/anthropic",
+            model="MiniMax-M3",
+        )
+
+        assert out is not None
+        assert len(out) == 1
+        assert out[0]["name"] == "Bash"
+
+    def test_sanitize_anthropic_tools_for_sophnet_normalizes_empty_parameters(self):
+        from litellm.llms.anthropic.common_utils import (
+            sanitize_anthropic_tools_for_upstream,
+        )
+
+        tools = [
+            {
+                "type": "custom",
+                "name": "Task",
+                "description": "subagent",
+                "input_schema": {},
             }
         ]
+        out = sanitize_anthropic_tools_for_upstream(
+            tools,
+            api_base="https://www.sophnet.com/api/open-apis/anthropic",
+            model="MiniMax-M3",
+        )
+
+        assert out is not None
+        assert len(out) == 1
+        schema = out[0]["input_schema"]
+        assert schema["type"] == "object"
+        assert isinstance(schema["properties"], dict)
+        assert schema["properties"], (
+            "empty properties must be replaced with a placeholder field to "
+            "satisfy Sophnet/MiniMax 2013 validation"
+        )
+
+    def test_sanitize_anthropic_tools_for_sophnet_injects_placeholder_for_zero_arg_tool(
+        self,
+    ):
+        """Sophnet/MiniMax reject ``properties: {}`` with error 2013. Codex
+        ships zero-arg tools like ``apply_patch`` / ``get_goal`` in that shape.
+        """
+        from litellm.llms.anthropic.common_utils import (
+            sanitize_anthropic_tools_for_upstream,
+        )
+
+        tools = [
+            {
+                "type": "custom",
+                "name": "apply_patch",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        ]
+        out = sanitize_anthropic_tools_for_upstream(
+            tools,
+            api_base="https://www.sophnet.com/api/open-apis/anthropic",
+            model="MiniMax-M3",
+        )
+
+        assert out is not None
+        assert len(out) == 1
+        schema = out[0]["input_schema"]
+        assert schema["type"] == "object"
+        assert isinstance(schema["properties"], dict)
+        assert schema[
+            "properties"
+        ], "zero-arg tool must get a placeholder property to satisfy Sophnet 2013"
+        # The placeholder must not appear in ``required`` — Sophnet validates
+        # required fields against actual call arguments.
+        assert "required" not in schema or not schema.get("required")
 
     def test_is_anthropic_compatible_gateway_opaque_error(self):
         from litellm.llms.anthropic.common_utils import (

@@ -403,12 +403,15 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
         tools_param = anthropic_messages_optional_request_params.get("tools")
         if isinstance(tools_param, list):
             from litellm.llms.anthropic.common_utils import (
+                infer_gateway_api_base_for_tool_sanitize,
                 sanitize_anthropic_tools_for_upstream,
             )
 
             sanitized_tools = sanitize_anthropic_tools_for_upstream(
                 tools_param,
-                api_base=api_base,
+                api_base=infer_gateway_api_base_for_tool_sanitize(
+                    model=model, api_base=api_base
+                ),
                 model=model,
             )
             if sanitized_tools:

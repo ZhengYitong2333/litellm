@@ -293,6 +293,27 @@ class LiteLLMMessagesToCompletionTransformationHandler:
         from litellm.litellm_core_utils.litellm_logging import (
             Logging as LiteLLMLoggingObject,
         )
+        from litellm.llms.anthropic.common_utils import (
+            infer_gateway_api_base_for_tool_sanitize,
+            sanitize_anthropic_messages_for_upstream,
+        )
+
+        _api_base_for_sanitize = None
+        if isinstance(extra_kwargs, dict):
+            _litellm_params = extra_kwargs.get("litellm_params")
+            if isinstance(_litellm_params, dict):
+                _api_base_for_sanitize = _litellm_params.get("api_base")
+            _api_base_for_sanitize = _api_base_for_sanitize or extra_kwargs.get(
+                "api_base"
+            )
+        _gateway_api_base = infer_gateway_api_base_for_tool_sanitize(
+            model=model, api_base=_api_base_for_sanitize
+        )
+        messages = sanitize_anthropic_messages_for_upstream(
+            messages=messages,
+            api_base=_gateway_api_base,
+            model=model,
+        )
 
         request_data = {
             "model": model,
@@ -313,6 +334,18 @@ class LiteLLMMessagesToCompletionTransformationHandler:
         if tool_choice:
             request_data["tool_choice"] = tool_choice
         if tools:
+            from litellm.llms.anthropic.common_utils import (
+                sanitize_anthropic_tools_for_upstream,
+            )
+
+            tools = (
+                sanitize_anthropic_tools_for_upstream(
+                    tools,
+                    api_base=_gateway_api_base,
+                    model=model,
+                )
+                or []
+            )
             request_data["tools"] = tools
         if top_k is not None:
             request_data["top_k"] = top_k

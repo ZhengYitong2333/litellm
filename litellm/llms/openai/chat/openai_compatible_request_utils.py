@@ -23,6 +23,8 @@ _CODEX_UNSUPPORTED_CHAT_TOOL_TYPES = frozenset(
 def _coerce_tool_parameters(parameters: Any) -> Dict[str, Any]:
     if not isinstance(parameters, dict):
         return {"type": "object"}
+    if not parameters:
+        return {"type": "object", "properties": {}}
     if "type" not in parameters:
         return {**parameters, "type": "object"}
     return parameters
@@ -88,7 +90,23 @@ def normalize_flat_function_tools(
 
         existing_function = tool.get("function")
         if isinstance(existing_function, dict):
-            normalized_tools.append(tool)
+            existing_name = existing_function.get("name")
+            if not isinstance(existing_name, str) or not existing_name:
+                # Anthropic-compatible gateways (Sophnet MiniMax, etc.) reject
+                # tools whose function name is empty with error 2013.
+                continue
+            coerced_params = _coerce_tool_parameters(
+                existing_function.get("parameters")
+            )
+            if coerced_params is not existing_function.get("parameters"):
+                normalized_tools.append(
+                    {
+                        **tool,
+                        "function": {**existing_function, "parameters": coerced_params},
+                    }
+                )
+            else:
+                normalized_tools.append(tool)
             continue
 
         name = tool.get("name")

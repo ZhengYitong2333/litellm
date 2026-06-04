@@ -855,11 +855,105 @@ def _is_official_anthropic_api_base(api_base: Optional[str]) -> bool:
     return "anthropic.com" in lower
 
 
+def infer_gateway_api_base_for_tool_sanitize(
+    *,
+    model: Optional[str] = None,
+    api_base: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Resolve api_base for gateway tool sanitization when only the proxy alias is known.
+
+    Claude Code calls /v1/messages with ``model=sophnet-gpt-5.5`` etc. without passing
+    api_base; without this hint, sanitize would no-op (treat as official Anthropic).
+    """
+    if api_base:
+        return api_base
+    if isinstance(model, str):
+        model_lower = model.lower()
+        if "sophnet" in model_lower or "minimax" in model_lower:
+            return "https://www.sophnet.com/api/open-apis/anthropic"
+    return api_base
+
+
 def _is_deepseek_api_base(api_base: Optional[str]) -> bool:
     """DeepSeek Anthropic Messages API requires thinking blocks in history round-trip."""
     if not api_base:
         return False
     return "deepseek.com" in api_base.lower()
+
+
+def _anthropic_tool_effective_name(tool: dict) -> Optional[str]:
+    """Return a non-empty tool name from Anthropic-native or OpenAI-wrapped tools."""
+    name = tool.get("name")
+    if isinstance(name, str):
+        stripped = name.strip()
+        if stripped:
+            return stripped
+    function = tool.get("function")
+    if isinstance(function, dict):
+        fn_name = function.get("name")
+        if isinstance(fn_name, str):
+            stripped = fn_name.strip()
+            if stripped:
+                return stripped
+    return None
+
+
+def _anthropic_tool_type_skips_name_and_schema_validation(
+    tool_type: Optional[str],
+) -> bool:
+    if not isinstance(tool_type, str):
+        return False
+    return tool_type.startswith("web_search")
+
+
+def _normalize_anthropic_tool_input_schema_for_gateway(tool: dict) -> dict:
+    """
+    Sophnet/MiniMax reject tools with empty parameters (error 2013).
+
+    Coerce missing/empty schemas to a minimal object schema, and inject a
+    benign placeholder property so zero-argument tools still satisfy the
+    upstream "parameters must not be empty" validation.
+    """
+    tool_type = tool.get("type")
+    if _anthropic_tool_type_skips_name_and_schema_validation(
+        tool_type if isinstance(tool_type, str) else None
+    ):
+        return tool
+
+    schema = tool.get("input_schema")
+    if schema is None and isinstance(tool.get("function"), dict):
+        schema = tool["function"].get("parameters")
+
+    if not isinstance(schema, dict) or not schema:
+        schema = {"type": "object", "properties": {}}
+    else:
+        schema = dict(schema)
+        if schema.get("type") != "object":
+            schema["type"] = "object"
+        if "properties" not in schema:
+            schema["properties"] = {}
+
+    properties = schema.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        schema["properties"] = {
+            "_unused": {
+                "type": "string",
+                "description": (
+                    "Unused placeholder. This tool takes no arguments; "
+                    "do not set this field."
+                ),
+            }
+        }
+
+    if "input_schema" in tool:
+        return {**tool, "input_schema": schema}
+    if isinstance(tool.get("function"), dict):
+        return {
+            **tool,
+            "function": {**tool["function"], "parameters": schema},
+        }
+    return {**tool, "input_schema": schema}
 
 
 def _should_drop_anthropic_tool_for_gateway(
@@ -872,16 +966,25 @@ def _should_drop_anthropic_tool_for_gateway(
     if _is_official_anthropic_api_base(api_base):
         return False
     if not isinstance(tool, dict):
-        return False
-
-    tool_type = tool.get("type")
-    if not isinstance(tool_type, str):
-        return False
-
-    if tool_type in {"shell", "namespace"}:
         return True
 
-    if tool_type == "computer_use_preview" or tool_type.startswith("computer_"):
+    tool_type = tool.get("type")
+    if isinstance(tool_type, str):
+        if tool_type in {"shell", "namespace"}:
+            return True
+
+        if tool_type == "computer_use_preview" or tool_type.startswith("computer_"):
+            return True
+
+        # Anthropic-native server tools (``web_search_*``, etc.) have no
+        # ``input_schema``; third-party gateways like Sophnet reject them with
+        # "function name or parameters is empty (2013)". The gateway can't
+        # execute the underlying server tool anyway, so drop instead of
+        # forwarding a non-functional definition.
+        if _anthropic_tool_type_skips_name_and_schema_validation(tool_type):
+            return True
+
+    if _anthropic_tool_effective_name(tool) is None:
         return True
 
     return False
@@ -903,21 +1006,67 @@ def sanitize_anthropic_tools_for_upstream(
             tool, api_base=api_base, model=model
         ):
             continue
-        if (
-            not _is_official_anthropic_api_base(api_base)
-            and isinstance(tool, dict)
-            and isinstance(tool.get("type"), str)
-            and tool["type"].startswith("web_search_")
-            and tool.get("name") != "web_search"
-        ):
-            tool = {**tool, "name": "web_search"}
+        if isinstance(tool, dict) and not _is_official_anthropic_api_base(api_base):
+            tool = _normalize_anthropic_tool_input_schema_for_gateway(tool)
         filtered.append(tool)
     return filtered
+
+
+def normalize_anthropic_tool_use_blocks_in_messages(
+    messages: List[Any],
+) -> List[Any]:
+    """
+    Coerce assistant ``tool_use`` blocks for third-party Anthropic gateways.
+
+    Sophnet/MiniMax reject empty function names or missing inputs (error 2013).
+    Claude Code history can replay ``tool_use`` blocks with ``name: ""``.
+    """
+    out: List[Any] = []
+    unnamed_index = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            out.append(message)
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            out.append(message)
+            continue
+
+        new_content: List[Any] = []
+        message_changed = False
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                new_content.append(block)
+                continue
+
+            block_copy = dict(block)
+            block_changed = False
+            name = block_copy.get("name")
+            if not isinstance(name, str) or not name.strip():
+                block_copy["name"] = f"litellm_unnamed_tool_{unnamed_index}"
+                unnamed_index += 1
+                block_changed = True
+            if block_copy.get("input") is None:
+                block_copy["input"] = {}
+                block_changed = True
+
+            if block_changed:
+                new_content.append(block_copy)
+                message_changed = True
+            else:
+                new_content.append(block)
+
+        if message_changed:
+            out.append({**message, "content": new_content})
+        else:
+            out.append(message)
+    return out
 
 
 def sanitize_anthropic_messages_for_upstream(
     messages: List[Any],
     api_base: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> List[Any]:
     """
     Sanitize Anthropic Messages history before forwarding to an upstream API.
@@ -929,13 +1078,18 @@ def sanitize_anthropic_messages_for_upstream(
       signatures are not portable; preserves them for DeepSeek's Anthropic Messages API
     - Inserts placeholder ``tool_result`` blocks for orphaned ``tool_use`` turns so
       Anthropic-compatible endpoints do not 400 on Claude Code history that drops them
+    - Normalizes empty ``tool_use`` names/inputs for gateways such as Sophnet/MiniMax
     """
+    effective_api_base = api_base or infer_gateway_api_base_for_tool_sanitize(
+        model=model, api_base=api_base
+    )
     messages = strip_empty_text_blocks_from_anthropic_messages(messages)
     messages = insert_missing_tool_result_blocks_for_anthropic_messages(messages)
-    if _is_official_anthropic_api_base(api_base):
+    if _is_official_anthropic_api_base(effective_api_base):
         return messages
+    messages = normalize_anthropic_tool_use_blocks_in_messages(messages)
     messages = strip_redacted_thinking_blocks_from_anthropic_messages(messages)
-    if not _is_deepseek_api_base(api_base):
+    if not _is_deepseek_api_base(effective_api_base):
         messages = strip_thinking_blocks_from_anthropic_messages(messages)
     return messages
 

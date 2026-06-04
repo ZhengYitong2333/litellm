@@ -1230,6 +1230,30 @@ def test_defer_loading_preserved_in_transformation():
     assert mcp_server is None
 
 
+def test_map_tool_helper_drops_empty_function_name():
+    """Regression: drop function tools with empty name at the final Anthropic map.
+
+    Sophnet/MiniMax-compatible gateways reject empty names with error 2013.
+    This is the chokepoint shared by every Anthropic-shaped request, so
+    it must defend even if upstream transforms leaked a malformed tool.
+    """
+    config = AnthropicConfig()
+
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "",
+            "description": "Invalid tool",
+            "parameters": {},
+        },
+    }
+
+    mapped_tool, mcp_server = config._map_tool_helper(tool)
+
+    assert mapped_tool is None
+    assert mcp_server is None
+
+
 def test_tool_search_complete_response_parsing():
     """Test parsing a complete tool search response with server_tool_use and tool_search_tool_result blocks"""
     config = AnthropicConfig()
@@ -2513,14 +2537,14 @@ def test_reasoning_effort_accepts_dict_shape_for_adaptive_model(reasoning_effort
     )
 
     # thinking must be set (adaptive for 4.6+)
-    assert "thinking" in result, (
-        f"thinking missing for reasoning_effort={reasoning_effort_value!r}"
-    )
+    assert (
+        "thinking" in result
+    ), f"thinking missing for reasoning_effort={reasoning_effort_value!r}"
     assert result["thinking"]["type"] == "adaptive"
     # output_config must carry the mapped effort
-    assert "output_config" in result, (
-        f"output_config missing for reasoning_effort={reasoning_effort_value!r}"
-    )
+    assert (
+        "output_config" in result
+    ), f"output_config missing for reasoning_effort={reasoning_effort_value!r}"
     assert result["output_config"]["effort"] == "low"
 
 
@@ -2532,7 +2556,9 @@ def test_reasoning_effort_accepts_dict_shape_for_adaptive_model(reasoning_effort
         {"effort": "low", "summary": "concise"},
     ],
 )
-def test_reasoning_effort_accepts_dict_shape_for_non_adaptive_model(reasoning_effort_value):
+def test_reasoning_effort_accepts_dict_shape_for_non_adaptive_model(
+    reasoning_effort_value,
+):
     """
     Non-adaptive (pre-4.6) branch: dict-shape reasoning_effort must still map
     to ``thinking.type='enabled'`` + ``budget_tokens``. ``output_config`` must
@@ -2547,9 +2573,9 @@ def test_reasoning_effort_accepts_dict_shape_for_non_adaptive_model(reasoning_ef
         drop_params=False,
     )
 
-    assert "thinking" in result, (
-        f"thinking missing for reasoning_effort={reasoning_effort_value!r}"
-    )
+    assert (
+        "thinking" in result
+    ), f"thinking missing for reasoning_effort={reasoning_effort_value!r}"
     assert result["thinking"]["type"] == "enabled"
     assert "budget_tokens" in result["thinking"]
     assert result["thinking"]["budget_tokens"] > 0
@@ -2582,12 +2608,12 @@ def test_reasoning_effort_unparseable_dict_is_dropped(bad_value):
         model="claude-sonnet-4-6-20260219",
         drop_params=False,
     )
-    assert "thinking" not in result, (
-        f"thinking should not be set for bad value {bad_value!r}"
-    )
-    assert "output_config" not in result, (
-        f"output_config should not be set for bad value {bad_value!r}"
-    )
+    assert (
+        "thinking" not in result
+    ), f"thinking should not be set for bad value {bad_value!r}"
+    assert (
+        "output_config" not in result
+    ), f"output_config should not be set for bad value {bad_value!r}"
 
 
 @pytest.mark.parametrize(
@@ -5189,6 +5215,70 @@ def test_transform_request_glm_sanitizes_empty_messages():
         headers={},
     )
     assert "messages" in data
+
+
+def test_transform_request_sophnet_sanitizes_messages_and_tools_without_model_gate():
+    config = AnthropicConfig()
+    data = config.transform_request(
+        model="anthropic/MiniMax-M3",
+        messages=[
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "toolu_1",
+                        "type": "function",
+                        "function": {"name": "", "arguments": None},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "toolu_1",
+                "content": "ok",
+            },
+        ],
+        optional_params={
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "valid_tool",
+                        "description": "Valid tool",
+                        "parameters": {},
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "",
+                        "description": "Invalid tool",
+                        "parameters": {},
+                    },
+                },
+            ]
+        },
+        litellm_params={"api_base": "https://www.sophnet.com/api/open-apis/anthropic"},
+        headers={},
+    )
+
+    assistant_msg = next(m for m in data["messages"] if m["role"] == "assistant")
+    tool_use_block = next(
+        b for b in assistant_msg["content"] if b.get("type") == "tool_use"
+    )
+    assert tool_use_block["name"] == "litellm_unnamed_tool_0"
+    assert tool_use_block["input"] == {}
+
+    assert len(data["tools"]) == 1
+    assert data["tools"][0]["function"]["name"] == "valid_tool"
+    parameters = data["tools"][0]["function"]["parameters"]
+    assert parameters["type"] == "object"
+    assert isinstance(parameters["properties"], dict)
+    assert parameters[
+        "properties"
+    ], "Sophnet/MiniMax rejects empty properties with upstream 2013"
 
 
 def test_map_tool_helper_computer_function_missing_parameters_raises():

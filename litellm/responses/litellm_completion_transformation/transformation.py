@@ -1866,14 +1866,23 @@ class LiteLLMCompletionResponsesConfig:
                 )
             elif tool.get("type") == "function":
                 typed_tool = cast(FunctionToolParam, tool)
-                # Ensure parameters has "type": "object" as required by providers like Anthropic
+                function_name = typed_tool.get("name")
+                if not isinstance(function_name, str) or not function_name:
+                    # Anthropic-compatible gateways (e.g. Sophnet MiniMax) reject
+                    # tools whose function name is empty with error 2013. Drop
+                    # them instead of forwarding name="" downstream.
+                    continue
+                # Ensure parameters has a valid object schema for Anthropic /
+                # MiniMax gateways, which reject empty parameters payloads.
                 parameters = dict(typed_tool.get("parameters", {}) or {})
-                if not parameters or "type" not in parameters:
+                if not parameters:
+                    parameters = {"type": "object", "properties": {}}
+                elif "type" not in parameters:
                     parameters["type"] = "object"
                 chat_completion_tool: Dict[str, Any] = {
                     "type": "function",
                     "function": {
-                        "name": typed_tool.get("name") or "",
+                        "name": function_name,
                         "description": typed_tool.get("description") or "",
                         "parameters": parameters,
                         "strict": typed_tool.get("strict", False) or False,

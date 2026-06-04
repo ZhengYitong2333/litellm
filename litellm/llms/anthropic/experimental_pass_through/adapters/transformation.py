@@ -14,7 +14,10 @@ from typing import (
     cast,
 )
 
-from litellm.llms.anthropic.common_utils import _is_valid_redacted_thinking_data
+from litellm.llms.anthropic.common_utils import (
+    _is_valid_redacted_thinking_data,
+    _normalize_anthropic_tool_input_schema_for_gateway,
+)
 from litellm.llms.anthropic.experimental_pass_through.utils import (
     is_reasoning_auto_summary_enabled,
 )
@@ -581,7 +584,15 @@ class LiteLLMAnthropicMessagesAdapter:
                                 assistant_content_list.append(text_block)
                             elif content.get("type") == "tool_use":
                                 # Truncate tool name for OpenAI's 64-char limit
-                                tool_name = truncate_tool_name(content.get("name", ""))
+                                raw_tool_name = content.get("name", "")
+                                if (
+                                    not isinstance(raw_tool_name, str)
+                                    or not str(raw_tool_name).strip()
+                                ):
+                                    raw_tool_name = (
+                                        f"litellm_unnamed_tool_{len(tool_calls)}"
+                                    )
+                                tool_name = truncate_tool_name(str(raw_tool_name))
                                 function_chunk: ChatCompletionToolCallFunctionChunk = {
                                     "name": tool_name,
                                     "arguments": json.dumps(content.get("input", {})),
@@ -829,15 +840,16 @@ class LiteLLMAnthropicMessagesAdapter:
             if truncated_name != original_name:
                 tool_name_mapping[truncated_name] = original_name
 
+            normalized_tool = _normalize_anthropic_tool_input_schema_for_gateway(tool)
             function_chunk = ChatCompletionToolParamFunctionChunk(
                 name=truncated_name,
             )
-            if "input_schema" in tool:
-                function_chunk["parameters"] = tool["input_schema"]  # type: ignore
-            if "description" in tool:
-                function_chunk["description"] = tool["description"]  # type: ignore
+            if "input_schema" in normalized_tool:
+                function_chunk["parameters"] = normalized_tool["input_schema"]  # type: ignore
+            if "description" in normalized_tool:
+                function_chunk["description"] = normalized_tool["description"]  # type: ignore
 
-            for k, v in tool.items():
+            for k, v in normalized_tool.items():
                 if k not in mapped_tool_params:  # pass additional computer kwargs
                     function_chunk.setdefault("parameters", {}).update({k: v})
             tool_param = ChatCompletionToolParam(

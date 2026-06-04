@@ -204,7 +204,7 @@ async def anthropic_messages(
     # already handles this in anthropic_messages_pt; sanitize the native
     # Anthropic Messages path here for the same guarantee.  See #22930.
     messages = sanitize_anthropic_messages_for_upstream(
-        messages=messages, api_base=api_base
+        messages=messages, api_base=api_base, model=model
     )
 
     original_stream = stream or kwargs.get(
@@ -367,7 +367,7 @@ def anthropic_messages_handler(
     # full-messages scan. Pop it so it never leaks into provider params.
     if not kwargs.pop("_litellm_messages_presanitized", False):
         messages = sanitize_anthropic_messages_for_upstream(
-            messages=messages, api_base=api_base
+            messages=messages, api_base=api_base, model=model
         )
 
     metadata = validate_anthropic_api_metadata(metadata)

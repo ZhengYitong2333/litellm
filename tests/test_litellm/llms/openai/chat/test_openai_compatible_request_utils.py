@@ -65,6 +65,34 @@ def test_normalize_flat_function_tools_preserves_existing_function_wrapper():
     assert normalize_flat_function_tools(tools) == tools
 
 
+def test_normalize_flat_function_tools_drops_existing_wrapper_without_name():
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "", "parameters": {"type": "object"}},
+        },
+        {
+            "type": "function",
+            "function": {"parameters": {"type": "object"}},
+        },
+    ]
+    assert normalize_flat_function_tools(tools) == []
+
+
+def test_normalize_flat_function_tools_coerces_existing_wrapper_empty_parameters():
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "search", "parameters": {}},
+        }
+    ]
+    normalized = normalize_flat_function_tools(tools)
+    assert normalized[0]["function"]["parameters"] == {
+        "type": "object",
+        "properties": {},
+    }
+
+
 def test_normalize_flat_function_tools_skips_function_without_name():
     tools = [{"type": "function", "description": "missing name"}]
     assert normalize_flat_function_tools(tools) == []

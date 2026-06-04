@@ -1337,6 +1337,61 @@ class TestToolTransformation:
         assert "allowed_callers" not in result_tool
         assert "input_examples" not in result_tool
 
+    def test_transform_function_tools_with_empty_name_are_dropped(self):
+        """Regression: empty-name function tools must not reach upstream.
+
+        Sophnet's MiniMax-M3 (Anthropic-compatible) rejects tool payloads where
+        function.name or parameters is empty with error 2013. Codex/Responses
+        sometimes emits placeholder tools with missing names; the Responses → Chat
+        bridge must drop them rather than forward name="".
+        """
+        tools = [
+            {"type": "function", "name": "", "parameters": {}},
+            {"type": "function", "parameters": {"type": "object"}},
+            {
+                "type": "function",
+                "name": "valid_tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        ]
+
+        (
+            result_tools,
+            _,
+        ) = LiteLLMCompletionResponsesConfig.transform_responses_api_tools_to_chat_completion_tools(
+            tools=tools
+        )
+
+        assert len(result_tools) == 1
+        assert result_tools[0]["function"]["name"] == "valid_tool"
+
+    def test_transform_function_tools_coerces_empty_parameters(self):
+        """Regression: empty parameters must be coerced to a valid JSON Schema.
+
+        MiniMax's gateway rejects ``parameters: {}`` with error 2013. The
+        transform should always emit ``{"type": "object", "properties": {}}`` at
+        minimum so the upstream sees a well-formed schema.
+        """
+        tools = [
+            {
+                "type": "function",
+                "name": "noop",
+                "parameters": {},
+            }
+        ]
+
+        (
+            result_tools,
+            _,
+        ) = LiteLLMCompletionResponsesConfig.transform_responses_api_tools_to_chat_completion_tools(
+            tools=tools
+        )
+
+        assert len(result_tools) == 1
+        params = result_tools[0]["function"]["parameters"]
+        assert params.get("type") == "object"
+        assert params.get("properties") == {}
+
     def test_transform_code_execution_tools(self):
         """Test that code_execution tools are passed through as-is"""
         code_execution_tool = {
