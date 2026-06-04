@@ -9,6 +9,7 @@ Usage:
   python3 test_corner_cases.py              # quick (default)
   python3 test_corner_cases.py --matrix     # CC/Codex x model matrix
   python3 test_corner_cases.py --full       # full + matrix tiers
+  python3 test_corner_cases.py --strict-upstream
   python3 test_corner_cases.py --stress
   python3 test_corner_cases.py --list
 """
@@ -35,6 +36,11 @@ _MATRIX_CASES: Dict[str, Callable[[str], Dict[str, Any]]] = {}
 BASE = os.environ.get("LITELLM_PROXY_BASE", "http://localhost:4000")
 KEY = os.environ.get("LITELLM_MASTER_KEY", "sk-litellm-sophnet-azure-local")
 WORKERS = int(os.environ.get("LITELLM_TEST_WORKERS", "4"))
+STRICT_UPSTREAM = os.environ.get("LITELLM_STRICT_UPSTREAM", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 Tier = Literal["quick", "full", "matrix", "stress"]
 Expect = Literal["ok", "fail", "skip"]
@@ -242,6 +248,8 @@ def _is_opaque_upstream_error(result: dict) -> bool:
 
 
 def _maybe_skip_upstream(result: dict, *, label: str = "upstream") -> Optional[dict]:
+    if STRICT_UPSTREAM:
+        return None
     if _is_upstream_rate_limit(result):
         return {
             "ok": True,
@@ -902,6 +910,27 @@ def build_cases() -> List[Case]:
                 fn=case_messages_codex_tools,
             ),
             Case(
+                id="responses.gpt55.stream",
+                tier="quick",
+                why="Codex GPT streaming must emit events and close cleanly",
+                fn=lambda: _MATRIX_CASES["responses_stream"](GPT55),
+                timeout=90,
+            ),
+            Case(
+                id="responses.gpt55.stream_tools",
+                tier="quick",
+                why="Codex GPT streaming + tools must not hang or drop SSE errors",
+                fn=lambda: _MATRIX_CASES["responses_stream_tools"](GPT55),
+                timeout=120,
+            ),
+            Case(
+                id="messages.minimax.tools",
+                tier="quick",
+                why="MiniMax tool schema sanitization must avoid upstream 2013/timeouts",
+                fn=lambda: _MATRIX_CASES["messages_tools"]("sophnet-minimax-m3"),
+                timeout=120,
+            ),
+            Case(
                 id="messages.claude.thinking_history",
                 tier="quick",
                 why="Strip invalid thinking signatures before upstream",
@@ -1309,8 +1338,16 @@ def main() -> int:
     parser.add_argument(
         "--stress", action="store_true", help="Include stress-tier cases"
     )
+    parser.add_argument(
+        "--strict-upstream",
+        action="store_true",
+        help="Treat upstream 429/5xx/timeouts as failures instead of skips",
+    )
     parser.add_argument("--list", action="store_true", help="List cases and exit")
     args = parser.parse_args()
+
+    global STRICT_UPSTREAM
+    STRICT_UPSTREAM = STRICT_UPSTREAM or args.strict_upstream
 
     if args.list:
         for c in build_cases():
@@ -1345,6 +1382,7 @@ def main() -> int:
         "base": BASE,
         "tiers": sorted(tiers, key=lambda t: TIER_ORDER[t]),
         "workers": WORKERS,
+        "strict_upstream": STRICT_UPSTREAM,
         "summary": {
             "total": len(results),
             "passed": passed,

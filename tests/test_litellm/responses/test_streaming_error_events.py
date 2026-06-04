@@ -286,3 +286,98 @@ async def test_async_iterator_raises_before_yielding_response_failed_event():
     assert iterator.finished is True
     assert iterator.completed_response is not None
     assert iterator.completed_response.type == ResponsesAPIStreamEvents.RESPONSE_FAILED
+
+
+class _BrokenSyncResponse:
+    headers = {}
+
+    def iter_bytes(self):
+        yield b": keep-alive\n\n"
+        raise httpx.ReadError("stream disconnected")
+
+
+class _TimeoutSyncResponse:
+    headers = {}
+
+    def iter_bytes(self):
+        if False:
+            yield b""
+        raise httpx.ReadTimeout("stream read timed out")
+
+
+class _BrokenAsyncResponse:
+    headers = {}
+
+    async def aiter_bytes(self):
+        yield b": keep-alive\n\n"
+        raise httpx.ReadError("async stream disconnected")
+
+
+def test_sync_responses_stream_transport_disconnect_logs_failure():
+    iterator = SyncResponsesAPIStreamingIterator(
+        response=_BrokenSyncResponse(),
+        model="sophnet-gpt-5.5",
+        responses_api_provider_config=Mock(spec=BaseResponsesAPIConfig),
+        logging_obj=_mock_logging_obj(),
+        custom_llm_provider="openai",
+    )
+
+    with (
+        pytest.raises(httpx.ReadError, match="stream disconnected"),
+        patch(
+            "litellm.responses.streaming_iterator.run_async_function"
+        ) as mock_run_async,
+        patch("litellm.responses.streaming_iterator.executor") as mock_executor,
+    ):
+        next(iterator)
+
+    assert iterator.finished is True
+    mock_run_async.assert_called_once()
+    mock_executor.submit.assert_called_once()
+
+
+def test_sync_responses_stream_transport_timeout_logs_failure():
+    iterator = SyncResponsesAPIStreamingIterator(
+        response=_TimeoutSyncResponse(),
+        model="sophnet-minimax-m3",
+        responses_api_provider_config=Mock(spec=BaseResponsesAPIConfig),
+        logging_obj=_mock_logging_obj(),
+        custom_llm_provider="openai",
+    )
+
+    with (
+        pytest.raises(httpx.ReadTimeout, match="stream read timed out"),
+        patch(
+            "litellm.responses.streaming_iterator.run_async_function"
+        ) as mock_run_async,
+        patch("litellm.responses.streaming_iterator.executor") as mock_executor,
+    ):
+        next(iterator)
+
+    assert iterator.finished is True
+    mock_run_async.assert_called_once()
+    mock_executor.submit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_responses_stream_transport_disconnect_logs_failure():
+    iterator = ResponsesAPIStreamingIterator(
+        response=_BrokenAsyncResponse(),
+        model="sophnet-gpt-5.5",
+        responses_api_provider_config=Mock(spec=BaseResponsesAPIConfig),
+        logging_obj=_mock_logging_obj(),
+        custom_llm_provider="openai",
+    )
+
+    with (
+        pytest.raises(httpx.ReadError, match="async stream disconnected"),
+        patch(
+            "litellm.responses.streaming_iterator.run_async_function"
+        ) as mock_run_async,
+        patch("litellm.responses.streaming_iterator.executor") as mock_executor,
+    ):
+        await iterator.__anext__()
+
+    assert iterator.finished is True
+    mock_run_async.assert_called_once()
+    mock_executor.submit.assert_called_once()
