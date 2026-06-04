@@ -77,6 +77,7 @@ class BaseResponsesAPIStreamingIterator:
         self._completed_response_cache_hit: Optional[bool] = None
         self._persist_completed_response_before_logging = True
         self._stream_created_time: float = time.time()
+        self._pending_failed_exception: Optional[Exception] = None
 
         # track request context for hooks
         self.litellm_metadata = litellm_metadata
@@ -279,9 +280,13 @@ class BaseResponsesAPIStreamingIterator:
                         == openai_types.ResponsesAPIStreamEvents.RESPONSE_FAILED
                     ):
                         self._handle_logging_failed_response()
-                        raise self._exception_from_failed_response_event(
+                        failed_exception = self._exception_from_failed_response_event(
                             openai_responses_api_chunk
                         )
+                        if self._is_generic_stream_error(failed_exception):
+                            self._pending_failed_exception = failed_exception
+                            return None
+                        raise failed_exception
                     else:
                         self._handle_logging_completed_response()
 
@@ -303,8 +308,16 @@ class BaseResponsesAPIStreamingIterator:
 
     def _exception_from_failed_response_event(self, failed_event: Any) -> Exception:
         response = getattr(failed_event, "response", None)
-        error = getattr(response, "error", None) if response is not None else None
+        if isinstance(response, dict):
+            error = response.get("error")
+        else:
+            error = getattr(response, "error", None) if response is not None else None
         return self._exception_from_error_payload(error)
+
+    def _is_generic_stream_error(self, exception: Exception) -> bool:
+        return isinstance(exception, litellm.BadRequestError) and str(
+            exception
+        ).endswith("Responses API stream error")
 
     def _exception_from_error_payload(self, error: Any) -> Exception:
         if isinstance(error, dict):
@@ -714,6 +727,8 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                     sse = await self.stream_iterator.__anext__()
                 except StopAsyncIteration:
                     self.finished = True
+                    if self._pending_failed_exception is not None:
+                        raise self._pending_failed_exception
                     raise StopAsyncIteration
 
                 self._check_max_streaming_duration()
@@ -788,6 +803,8 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                     sse = next(self.stream_iterator)
                 except StopIteration:
                     self.finished = True
+                    if self._pending_failed_exception is not None:
+                        raise self._pending_failed_exception
                     raise StopIteration
 
                 self._check_max_streaming_duration()

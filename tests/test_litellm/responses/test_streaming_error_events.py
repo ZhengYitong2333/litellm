@@ -381,3 +381,76 @@ async def test_async_responses_stream_transport_disconnect_logs_failure():
     assert iterator.finished is True
     mock_run_async.assert_called_once()
     mock_executor.submit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_async_iterator_waits_for_error_after_failed_event_without_details():
+    failed_chunk = {
+        "type": "response.failed",
+        "response": {
+            "id": "resp_123",
+            "created_at": 0,
+            "status": "failed",
+            "model": "sophnet-gpt-5.5",
+            "object": "response",
+            "output": [],
+            "error": None,
+        },
+    }
+    error_chunk = {
+        "type": "error",
+        "sequence_number": 2,
+        "error": {
+            "type": "too_many_requests",
+            "code": "too_many_requests",
+            "message": "Too Many Requests",
+        },
+    }
+
+    async def mock_aiter_bytes():
+        yield f"data: {json.dumps(failed_chunk)}\n\n".encode("utf-8")
+        yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
+
+    mock_response = Mock()
+    mock_response.headers = {}
+    mock_response.aiter_bytes = mock_aiter_bytes
+    mock_logging_obj = _mock_logging_obj()
+    mock_config = Mock(spec=BaseResponsesAPIConfig)
+    mock_config.transform_streaming_response.side_effect = [
+        ResponseFailedEvent(
+            type=ResponsesAPIStreamEvents.RESPONSE_FAILED,
+            response=ResponsesAPIResponse(
+                id="resp_123",
+                created_at=0,
+                status="failed",
+                model="sophnet-gpt-5.5",
+                object="response",
+                output=[],
+                error=None,
+            ),
+        ),
+        ErrorEvent(
+            type=ResponsesAPIStreamEvents.ERROR,
+            sequence_number=2,
+            error=ErrorEventError(
+                type="too_many_requests",
+                code="too_many_requests",
+                message="Too Many Requests",
+                param=None,
+            ),
+        ),
+    ]
+    iterator = ResponsesAPIStreamingIterator(
+        response=mock_response,
+        model="sophnet-gpt-5.5",
+        responses_api_provider_config=mock_config,
+        logging_obj=mock_logging_obj,
+        custom_llm_provider="openai",
+    )
+
+    with pytest.raises(litellm.RateLimitError):
+        await iterator.__anext__()
+
+    assert iterator.finished is True
+    assert iterator.completed_response is not None
+    assert iterator.completed_response.type == ResponsesAPIStreamEvents.RESPONSE_FAILED
