@@ -387,9 +387,7 @@ def test_process_chunk_completed_response_updates_id_and_usage_cost(monkeypatch)
         # Chunk must include a top-level "response" key so BaseResponsesAPIStreamingIterator
         # runs _update_responses_api_response_id_with_model_id (see streaming_iterator.py).
         event = iterator._process_chunk(
-            json.dumps(
-                {"type": "response.completed", "response": {"id": "resp_live"}}
-            )
+            json.dumps({"type": "response.completed", "response": {"id": "resp_live"}})
         )
     finally:
         litellm.include_cost_in_streaming_usage = original_include_cost
@@ -430,9 +428,14 @@ def test_process_chunk_failed_response_triggers_failure_logging(monkeypatch):
     failure_handler = MagicMock()
     monkeypatch.setattr(iterator, "_handle_logging_failed_response", failure_handler)
 
-    event = iterator._process_chunk(json.dumps({"type": "response.failed"}))
+    with pytest.raises(litellm.BadRequestError):
+        iterator._process_chunk(json.dumps({"type": "response.failed"}))
 
-    assert iterator.completed_response is event
+    assert iterator.completed_response is not None
+    assert (
+        iterator.completed_response.type
+        == openai_types.ResponsesAPIStreamEvents.RESPONSE_FAILED
+    )
     failure_handler.assert_called_once()
 
 

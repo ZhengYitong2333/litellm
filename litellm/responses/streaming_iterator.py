@@ -240,6 +240,9 @@ class BaseResponsesAPIStreamingIterator:
                 # Store the completed response (also for incomplete/failed so logging still fires)
                 _chunk_type = getattr(openai_responses_api_chunk, "type", None)
                 openai_types = _get_openai_response_types()
+                if _chunk_type == openai_types.ResponsesAPIStreamEvents.ERROR:
+                    raise self._exception_from_error_event(openai_responses_api_chunk)
+
                 if openai_responses_api_chunk and _chunk_type in (
                     openai_types.ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
                     openai_types.ResponsesAPIStreamEvents.RESPONSE_INCOMPLETE,
@@ -276,6 +279,9 @@ class BaseResponsesAPIStreamingIterator:
                         == openai_types.ResponsesAPIStreamEvents.RESPONSE_FAILED
                     ):
                         self._handle_logging_failed_response()
+                        raise self._exception_from_failed_response_event(
+                            openai_responses_api_chunk
+                        )
                     else:
                         self._handle_logging_completed_response()
 
@@ -290,6 +296,65 @@ class BaseResponsesAPIStreamingIterator:
             # This ensures failures are logged even when _process_chunk is called directly
             self._handle_failure(e)
             raise
+
+    def _exception_from_error_event(self, error_event: Any) -> Exception:
+        error = getattr(error_event, "error", None)
+        return self._exception_from_error_payload(error)
+
+    def _exception_from_failed_response_event(self, failed_event: Any) -> Exception:
+        response = getattr(failed_event, "response", None)
+        error = getattr(response, "error", None) if response is not None else None
+        return self._exception_from_error_payload(error)
+
+    def _exception_from_error_payload(self, error: Any) -> Exception:
+        if isinstance(error, dict):
+            message = error.get("message") or "Responses API stream error"
+            code = error.get("code")
+            error_type = error.get("type")
+        else:
+            message = getattr(error, "message", None) or "Responses API stream error"
+            code = getattr(error, "code", None)
+            error_type = getattr(error, "type", None)
+
+        body = {"error": {"message": message, "code": code, "type": error_type}}
+        provider = self.custom_llm_provider or ""
+        model = self.model or ""
+
+        if code == "context_length_exceeded":
+            return litellm.ContextWindowExceededError(
+                message=message,
+                model=model,
+                llm_provider=provider,
+                response=self.response,
+            )
+        if code in {"rate_limit_exceeded", "too_many_requests"} or error_type in {
+            "rate_limit_error",
+            "rate_limit_exceeded",
+            "too_many_requests",
+        }:
+            return litellm.RateLimitError(
+                message=message,
+                model=model,
+                llm_provider=provider,
+                response=self.response,
+            )
+        if code in {"invalid_api_key", "authentication_error"} or error_type in {
+            "authentication_error",
+            "invalid_api_key",
+        }:
+            return litellm.AuthenticationError(
+                message=message,
+                model=model,
+                llm_provider=provider,
+                response=self.response,
+            )
+        return litellm.BadRequestError(
+            message=message,
+            model=model,
+            llm_provider=provider,
+            response=self.response,
+            body=body,
+        )
 
     def _log_completed_response(self, *, is_async: bool) -> None:
         if self._completed_response_logged:
