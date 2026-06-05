@@ -258,11 +258,12 @@ def test_normalize_flat_function_tools_adds_object_type_to_parameters(
         }
     ]
     result = config._normalize_flat_function_tools(tools)
+    assert result is not None
     assert result[0]["function"]["parameters"]["type"] == "object"
 
 
 def test_messages_contain_json_keyword_nested_structure(config: OpenAIConfig):
-    messages = [
+    messages: list = [
         {
             "role": "user",
             "content": [{"type": "text", "text": "please return json output"}],
@@ -274,7 +275,7 @@ def test_messages_contain_json_keyword_nested_structure(config: OpenAIConfig):
 def test_messages_contain_json_keyword_returns_false_when_absent(
     config: OpenAIConfig,
 ):
-    messages = [{"role": "user", "content": "plain text only"}]
+    messages: list = [{"role": "user", "content": "plain text only"}]
     assert OpenAIConfig._messages_contain_json_keyword(messages) is False
 
 

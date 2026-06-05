@@ -19,7 +19,9 @@ try:
     )
 except ImportError:
 
-    def normalize_flat_function_tools(tools):  # type: ignore[no-redef]
+    def normalize_flat_function_tools(  # type: ignore[no-redef]
+        tools: Optional[List[Any]],
+    ) -> Optional[List[Any]]:
         return tools
 
 

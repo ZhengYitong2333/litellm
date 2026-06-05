@@ -438,32 +438,33 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
         if "delta" not in merged_chunk:
             merged_chunk["delta"] = {}
 
-        uncached_input_tokens = chunk.usage.prompt_tokens or 0
+        chunk_usage = chunk.usage  # type: ignore[attr-defined]
+        uncached_input_tokens = chunk_usage.prompt_tokens or 0
         if (
-            hasattr(chunk.usage, "prompt_tokens_details")
-            and chunk.usage.prompt_tokens_details
+            hasattr(chunk_usage, "prompt_tokens_details")
+            and chunk_usage.prompt_tokens_details
         ):
             cached_tokens = (
-                getattr(chunk.usage.prompt_tokens_details, "cached_tokens", 0) or 0
+                getattr(chunk_usage.prompt_tokens_details, "cached_tokens", 0) or 0
             )
             uncached_input_tokens -= cached_tokens
 
         usage_dict: UsageDelta = {
             "input_tokens": uncached_input_tokens,
-            "output_tokens": chunk.usage.completion_tokens or 0,
+            "output_tokens": chunk_usage.completion_tokens or 0,
         }
         if (
-            hasattr(chunk.usage, "_cache_creation_input_tokens")
-            and chunk.usage._cache_creation_input_tokens > 0
+            hasattr(chunk_usage, "_cache_creation_input_tokens")
+            and chunk_usage._cache_creation_input_tokens > 0
         ):
             usage_dict["cache_creation_input_tokens"] = (
-                chunk.usage._cache_creation_input_tokens
+                chunk_usage._cache_creation_input_tokens
             )
         if (
-            hasattr(chunk.usage, "_cache_read_input_tokens")
-            and chunk.usage._cache_read_input_tokens > 0
+            hasattr(chunk_usage, "_cache_read_input_tokens")
+            and chunk_usage._cache_read_input_tokens > 0
         ):
-            usage_dict["cache_read_input_tokens"] = chunk.usage._cache_read_input_tokens
+            usage_dict["cache_read_input_tokens"] = chunk_usage._cache_read_input_tokens
 
         merged_chunk["usage"] = usage_dict
         self.chunk_queue.append(merged_chunk)

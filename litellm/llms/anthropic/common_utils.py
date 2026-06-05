@@ -1164,7 +1164,7 @@ def insert_missing_tool_result_blocks_for_anthropic_messages(
         )
         answered = (
             _collect_tool_result_ids(next_message.get("content"))
-            if next_is_user
+            if next_is_user and next_message is not None
             else set()
         )
         missing = [tid for tid in tool_use_ids if tid not in answered]
@@ -1178,7 +1178,11 @@ def insert_missing_tool_result_blocks_for_anthropic_messages(
             {"type": "tool_result", "tool_use_id": tid, "content": ""}
             for tid in missing
         ]
-        if next_is_user and isinstance(next_message.get("content"), list):
+        if (
+            next_is_user
+            and next_message is not None
+            and isinstance(next_message.get("content"), list)
+        ):
             # Anthropic requires tool_result blocks at the start of the user turn.
             out.append(
                 {**next_message, "content": placeholders + next_message["content"]}

@@ -840,7 +840,7 @@ class LiteLLMAnthropicMessagesAdapter:
             if truncated_name != original_name:
                 tool_name_mapping[truncated_name] = original_name
 
-            normalized_tool = _normalize_anthropic_tool_input_schema_for_gateway(tool)
+            normalized_tool = _normalize_anthropic_tool_input_schema_for_gateway(tool)  # type: ignore[arg-type]
             function_chunk = ChatCompletionToolParamFunctionChunk(
                 name=truncated_name,
             )
@@ -1121,10 +1121,15 @@ class LiteLLMAnthropicMessagesAdapter:
         )
         if response_format:
             model = anthropic_message_request.get("model") or new_kwargs.get("model")
+            custom_llm_provider_raw = new_kwargs.get("custom_llm_provider")
             response_format = self._maybe_downgrade_json_schema_response_format(
                 model=str(model or ""),
                 response_format=response_format,
-                custom_llm_provider=new_kwargs.get("custom_llm_provider"),
+                custom_llm_provider=(
+                    custom_llm_provider_raw
+                    if isinstance(custom_llm_provider_raw, str)
+                    else None
+                ),
             )
             new_kwargs["response_format"] = response_format
 
@@ -1259,7 +1264,7 @@ class LiteLLMAnthropicMessagesAdapter:
                 if isinstance(message, dict) and message.get("role") == "assistant"
                 else None
             )
-            if not tool_calls:
+            if not tool_calls or not isinstance(tool_calls, list):
                 index += 1
                 continue
 
