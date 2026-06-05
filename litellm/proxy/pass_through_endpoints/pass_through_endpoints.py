@@ -2,6 +2,8 @@ import ast
 import asyncio
 import copy
 import json
+import math
+import os
 import posixpath
 import traceback
 from base64 import b64encode
@@ -76,6 +78,26 @@ pass_through_endpoint_logging = PassThroughEndpointLogging()
 _registered_pass_through_routes: Dict[
     str, Dict[str, Union[str, List[str], Dict[str, Any]]]
 ] = {}
+
+
+def _resolve_passthrough_timeout() -> float:
+    raw = os.getenv("LITELLM_PASSTHROUGH_TIMEOUT")
+    if not raw:
+        return 600.0
+    try:
+        value = float(raw)
+    except ValueError:
+        verbose_proxy_logger.warning(
+            "LITELLM_PASSTHROUGH_TIMEOUT=%r is not numeric; using 600s", raw
+        )
+        return 600.0
+    if not math.isfinite(value) or value <= 0 or value > 86400:
+        verbose_proxy_logger.warning(
+            "LITELLM_PASSTHROUGH_TIMEOUT=%r out of range (0, 86400]; using 600s",
+            value,
+        )
+        return 600.0
+    return value
 
 
 def get_response_body(response: httpx.Response) -> Optional[dict]:
@@ -799,9 +821,10 @@ async def pass_through_request(  # noqa: PLR0915
             data=_parsed_body,
             call_type="pass_through_endpoint",
         )
+        passthrough_timeout = _resolve_passthrough_timeout()
         async_client_obj = get_async_httpx_client(
             llm_provider=httpxSpecialProvider.PassThroughEndpoint,
-            params={"timeout": 600},
+            params={"timeout": passthrough_timeout},
         )
         async_client = async_client_obj.client
         passthrough_logging_payload = PassthroughStandardLoggingPayload(

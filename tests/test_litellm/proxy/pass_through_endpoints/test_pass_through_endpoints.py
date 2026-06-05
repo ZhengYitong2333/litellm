@@ -18,6 +18,7 @@ sys.path.insert(
 from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
     HttpPassThroughEndpointHelpers,
     LITELLM_PASS_THROUGH_CUSTOM_BODY_STATE_KEY,
+    _resolve_passthrough_timeout,
     pass_through_request,
 )
 from litellm.proxy.pass_through_endpoints.success_handler import (
@@ -2618,3 +2619,82 @@ def test_get_response_headers_strips_server_and_date():
     assert lowered["content-type"] == "application/json"
     assert lowered["x-request-id"] == "req_abc"
     assert lowered["anthropic-ratelimit-requests-remaining"] == "100"
+
+
+class TestResolvePassthroughTimeout:
+    """Unit tests for the LITELLM_PASSTHROUGH_TIMEOUT env-var resolver.
+
+    The resolver must degrade gracefully on missing, non-numeric, NaN/inf,
+    out-of-range, and zero/negative values — never raise inside the
+    request path, because a typo in deployment env would otherwise 500
+    every passthrough request.
+    """
+
+    ENV_VAR = "LITELLM_PASSTHROUGH_TIMEOUT"
+
+    def test_missing_returns_default(self, monkeypatch):
+        monkeypatch.delenv(self.ENV_VAR, raising=False)
+        assert _resolve_passthrough_timeout() == 600.0
+
+    def test_empty_string_returns_default(self, monkeypatch):
+        monkeypatch.setenv(self.ENV_VAR, "")
+        assert _resolve_passthrough_timeout() == 600.0
+
+    def test_valid_value_passes_through(self, monkeypatch):
+        monkeypatch.setenv(self.ENV_VAR, "1200")
+        assert _resolve_passthrough_timeout() == 1200.0
+
+    def test_valid_float_value_passes_through(self, monkeypatch):
+        monkeypatch.setenv(self.ENV_VAR, "1800.5")
+        assert _resolve_passthrough_timeout() == 1800.5
+
+    @pytest.mark.parametrize("bad", ["abc", "twelve hundred", "1.5x", "--600"])
+    def test_non_numeric_falls_back(self, monkeypatch, bad):
+        monkeypatch.setenv(self.ENV_VAR, bad)
+        with patch(
+            "litellm.proxy.pass_through_endpoints.pass_through_endpoints.verbose_proxy_logger"
+        ) as mock_logger:
+            assert _resolve_passthrough_timeout() == 600.0
+            mock_logger.warning.assert_called_once()
+            assert "not numeric" in mock_logger.warning.call_args[0][0]
+
+    @pytest.mark.parametrize("bad", ["0", "-1", "-0.5"])
+    def test_non_positive_falls_back(self, monkeypatch, bad):
+        monkeypatch.setenv(self.ENV_VAR, bad)
+        with patch(
+            "litellm.proxy.pass_through_endpoints.pass_through_endpoints.verbose_proxy_logger"
+        ) as mock_logger:
+            assert _resolve_passthrough_timeout() == 600.0
+            mock_logger.warning.assert_called_once()
+            assert "out of range" in mock_logger.warning.call_args[0][0]
+
+    def test_above_cap_falls_back(self, monkeypatch):
+        monkeypatch.setenv(self.ENV_VAR, "86401")
+        with patch(
+            "litellm.proxy.pass_through_endpoints.pass_through_endpoints.verbose_proxy_logger"
+        ) as mock_logger:
+            assert _resolve_passthrough_timeout() == 600.0
+            mock_logger.warning.assert_called_once()
+            assert "out of range" in mock_logger.warning.call_args[0][0]
+
+    @pytest.mark.parametrize("bad", ["nan", "NaN", "inf", "INF", "-inf"])
+    def test_nan_inf_falls_back(self, monkeypatch, bad):
+        # float("nan") and float("inf") do NOT raise ValueError, and
+        # NaN bypasses `value <= 0`. math.isfinite is the only thing
+        # that catches both — verify the helper uses it.
+        monkeypatch.setenv(self.ENV_VAR, bad)
+        with patch(
+            "litellm.proxy.pass_through_endpoints.pass_through_endpoints.verbose_proxy_logger"
+        ) as mock_logger:
+            assert _resolve_passthrough_timeout() == 600.0
+            mock_logger.warning.assert_called_once()
+            assert "out of range" in mock_logger.warning.call_args[0][0]
+
+    def test_upper_bound_inclusive(self, monkeypatch):
+        # 86400 (24h) is the inclusive cap; 86401 must fall back.
+        monkeypatch.setenv(self.ENV_VAR, "86400")
+        assert _resolve_passthrough_timeout() == 86400.0
+
+    def test_typical_value(self, monkeypatch):
+        monkeypatch.setenv(self.ENV_VAR, "1200")
+        assert _resolve_passthrough_timeout() == 1200.0
