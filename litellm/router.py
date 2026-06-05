@@ -119,6 +119,7 @@ from litellm.router_utils.handle_error import (
     send_llm_exception_alert,
 )
 from litellm.router_utils.health_state_cache import DeploymentHealthCache
+from litellm.router_utils.responses_stream_state import _ResponsesStreamState
 from litellm.router_utils.pre_call_checks.deployment_affinity_check import (
     DeploymentAffinityCheck,
 )
@@ -2378,6 +2379,10 @@ class Router:
     def _build_responses_continuation_input(
         input_val: Optional[Union[str, "ResponseInputParam"]],
         generated_content: str,
+        *,
+        partial_tool_calls: Optional[List[Dict[str, Any]]] = None,
+        partial_reasoning: Optional[List[Dict[str, Any]]] = None,
+        had_in_flight_item: bool = False,
     ) -> "ResponseInputParam":
         """
         Convert Responses-API input + partial assistant output into a
@@ -2392,6 +2397,15 @@ class Router:
         semantics (OpenAI, Vertex) treat this as conversational context
         and may regenerate — same trade-off as the chat-completions path
         for non-Anthropic fallbacks.
+
+        When partial_tool_calls are provided:
+        - Completed tool calls (done=True) are injected as a pair of
+          function_call + function_call_output input items (required by
+          the API schema — a bare function_call without a paired output
+          will 400).
+        - Incomplete (done=False) tool calls are described only in the
+          developer message text since their partial arguments are not
+          valid JSON.
         """
         # base/continuation are List[Any] because ResponseInputParam items
         # are a wide Union of TypedDicts (EasyInputMessageParam, Message,
@@ -2411,28 +2425,105 @@ class Router:
             base = list(input_val)
         else:
             base = []
-        continuation: List[Any] = [
+
+        # Build developer instruction — start with the standard preamble
+        developer_parts: List[str] = []
+
+        # --- Partial reasoning summaries ---
+        partial_reasoning = partial_reasoning or []
+        if partial_reasoning:
+            reasoning_texts = []
+            for r in partial_reasoning:
+                _text = r.get("summary_text", "")
+                if _text:
+                    reasoning_texts.append(_text)
+            if reasoning_texts:
+                developer_parts.append(
+                    "The previous assistant was in the middle of a reasoning "
+                    "step with the following intermediate thoughts already "
+                    "generated:\n" + "\n---\n".join(reasoning_texts)
+                )
+
+        # --- Completed tool calls (inject as function_call + function_call_output) ---
+        tool_input_items: List[Any] = []
+        partial_tool_calls = partial_tool_calls or []
+        done_tool_calls = [tc for tc in partial_tool_calls if tc.get("done")]
+        undone_tool_calls = [tc for tc in partial_tool_calls if not tc.get("done")]
+
+        for tc in done_tool_calls:
+            tool_input_items.append(
+                {
+                    "type": "function_call",
+                    "id": tc.get("item_id", ""),
+                    "call_id": tc.get("call_id", tc.get("item_id", "")),
+                    "name": tc.get("name", ""),
+                    "arguments": tc.get("arguments_str", "{}"),
+                    "status": "completed",
+                }
+            )
+            tool_input_items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": tc.get("call_id", tc.get("item_id", "")),
+                    "output": "[interrupted mid-stream — no real tool output available]",
+                    "status": "completed",
+                }
+            )
+
+        # --- Incomplete tool calls (mention in developer message) ---
+        for tc in undone_tool_calls:
+            developer_parts.append(
+                "The previous assistant began a tool call '{}' (call_id={}) "
+                "but was interrupted before completing its arguments. "
+                "Do NOT repeat this tool call with the same arguments; "
+                "re-evaluate whether it is still needed.".format(
+                    tc.get("name", "unknown"),
+                    tc.get("call_id", tc.get("item_id", "")),
+                )
+            )
+
+        # --- Standard interruption preamble ---
+        preamble = (
+            "The previous assistant response was interrupted mid-stream. "
+            "Continue exactly where it stopped — do not repeat any of its "
+            "content. Your response must read as a seamless continuation."
+        )
+
+        # Assemble developer instruction text
+        if developer_parts:
+            developer_text = preamble + "\n\n" + "\n\n".join(developer_parts)
+        else:
+            developer_text = preamble
+
+        continuation: List[Any] = []
+
+        # Completed tool items go right after base (before the instruction)
+        if tool_input_items:
+            continuation.extend(tool_input_items)
+
+        continuation.append(
             {
                 "type": "message",
                 "role": "developer",
                 "content": [
                     {
                         "type": "input_text",
-                        "text": (
-                            "The previous assistant response was interrupted "
-                            "mid-stream. Continue exactly where it stopped — "
-                            "do not repeat any of its content. Your response "
-                            "must read as a seamless continuation."
-                        ),
+                        "text": developer_text,
                     }
                 ],
-            },
-            {
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": generated_content}],
-            },
-        ]
+            }
+        )
+
+        # Only include the assistant prefill when there is actual generated text
+        if generated_content:
+            continuation.append(
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": generated_content}],
+                }
+            )
+
         return cast("ResponseInputParam", base + continuation)
 
     async def _aresponses_streaming_iterator(
@@ -2545,33 +2636,8 @@ class Router:
             )
 
             fallback_response = None
-            visible_text: List[str] = []
             yielded_visible_output = False
-
-            def _is_visible_output_event(event: Any) -> bool:
-                """
-                True for events that put rendered text in front of the user.
-                Used to decide whether a mid-stream failure can safely retry
-                without duplicating output the client already displayed.
-                Lifecycle events (response.created / in_progress, output_item.added
-                with no content yet) and reasoning summaries do not count.
-                """
-                event_type = getattr(event, "type", None)
-                return event_type in (
-                    _StreamEvents.OUTPUT_TEXT_DELTA,
-                    _StreamEvents.OUTPUT_TEXT_DONE,
-                    _StreamEvents.CONTENT_PART_DONE,
-                    _StreamEvents.OUTPUT_ITEM_DONE,
-                )
-
-            def _record_visible_text(event: Any) -> None:
-                """Best-effort: collect output_text deltas/dones so a partial
-                continuation prompt to the fallback model is non-empty."""
-                event_type = getattr(event, "type", None)
-                if event_type == _StreamEvents.OUTPUT_TEXT_DELTA:
-                    delta = getattr(event, "delta", None)
-                    if isinstance(delta, str):
-                        visible_text.append(delta)
+            stream_state = _ResponsesStreamState()
 
             def _wrap_as_fallback_error(exc: Exception) -> "MidStreamFallbackError":
                 """
@@ -2581,7 +2647,8 @@ class Router:
                 fallback path below can engage. Non-retriable client errors
                 (4xx except 429) are surfaced unchanged.
                 """
-                generated = "".join(visible_text)
+                generated = stream_state.get_generated_content()
+                error_payload = stream_state.to_error_payload()
                 return MidStreamFallbackError(
                     message=str(exc),
                     model=getattr(source_iterator, "model", None) or "",
@@ -2590,6 +2657,7 @@ class Router:
                     original_exception=exc,
                     generated_content=generated,
                     is_pre_first_chunk=not yielded_visible_output,
+                    **error_payload,
                 )
 
             def _should_engage_fallback(exc: Exception) -> bool:
@@ -2616,9 +2684,9 @@ class Router:
 
             try:
                 async for item in source_iterator:
-                    if _is_visible_output_event(item):
+                    stream_state.observe(item)
+                    if stream_state.is_visible(item):
                         yielded_visible_output = True
-                    _record_visible_text(item)
                     yield item
             except Exception as raw_exc:
                 if not _should_engage_fallback(raw_exc):
@@ -2648,18 +2716,19 @@ class Router:
                     initial_kwargs["original_function"] = (
                         self._ageneric_api_call_with_fallbacks_helper
                     )
-                    if e.is_pre_first_chunk or not e.generated_content:
-                        # No content generated before the error — retry with the
-                        # original input. Adding a continuation prompt would
-                        # waste tokens and confuse the model.
-                        pass
-                    else:
+                    if stream_state.has_recoverable_state() or e.generated_content:
                         initial_kwargs["input"] = (
                             Router._build_responses_continuation_input(
                                 initial_kwargs.get("input"),
                                 e.generated_content,
+                                **stream_state.to_continuation_payload(),
                             )
                         )
+                    else:
+                        # No content generated before the error — retry with the
+                        # original input. Adding a continuation prompt would
+                        # waste tokens and confuse the model.
+                        pass
                     # The Responses-API path stores observability metadata
                     # under "litellm_metadata" (not the default "metadata") —
                     # see _ageneric_api_call_with_fallbacks. Mirroring that

@@ -9,7 +9,7 @@
 
 ## LiteLLM versions of the OpenAI Exception Types
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 import openai
@@ -957,6 +957,10 @@ class MidStreamFallbackError(ServiceUnavailableError):  # type: ignore
         num_retries: Optional[int] = None,
         generated_content: str = "",
         is_pre_first_chunk: bool = False,
+        *,
+        partial_tool_calls: Optional[List[Dict[str, Any]]] = None,
+        partial_reasoning: Optional[List[Dict[str, Any]]] = None,
+        had_in_flight_item: bool = False,
     ):
         original_status = getattr(original_exception, "status_code", None)
         self.status_code = int(original_status) if original_status is not None else 503
@@ -969,6 +973,9 @@ class MidStreamFallbackError(ServiceUnavailableError):  # type: ignore
         self.num_retries = num_retries
         self.generated_content = generated_content
         self.is_pre_first_chunk = is_pre_first_chunk
+        self.partial_tool_calls = partial_tool_calls or []
+        self.partial_reasoning = partial_reasoning or []
+        self.had_in_flight_item = had_in_flight_item
 
         # Create a response if one wasn't provided
         if response is None:
