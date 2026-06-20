@@ -239,7 +239,8 @@ Proxy 在 `config.yaml` 中注册的 **`model_name`**（客户端填写的名字
 | `azure-gpt-5.5` | Azure OpenAI | ⭐ **Opus 推荐** | 规划 / 复杂推理 |
 | `deepseek-v4-flash` | DeepSeek 官方 | ⭐ **Haiku 推荐** | 快、便宜，thinking |
 | `deepseek-v4-pro` | DeepSeek 官方 | 高质量 | 1M 上下文 |
-| `sophnet-glm-5.1` | Sophnet OpenAI 兼容 | 轻量 | 经 LiteLLM 适配器 |
+| `sophnet-glm-5.2` | Sophnet OpenAI 兼容 | ⭐ **轻量推荐** | 经 LiteLLM 适配器 |
+| `sophnet-glm-5.1` | Sophnet OpenAI 兼容 | 轻量 | 旧版 GLM |
 | `sophnet-gpt-5.5` | Sophnet OpenAI 兼容 | 通用 | 可能 402 |
 | `sophnet-deepseekv4-pro` | Sophnet OpenAI 兼容 | 备选 | Sophnet 版 DeepSeek |
 | `sophnet-deepseekv4-flash` | Sophnet OpenAI 兼容 | 备选 | Sophnet 版轻量 |
@@ -255,6 +256,8 @@ Proxy 在 `config.yaml` 中注册的 **`model_name`**（客户端填写的名字
 | `azure-gpt-5.4` | Azure OpenAI | 稳定 | GPT 系列，无 thinking 干扰 |
 | `azure-gpt-5.5` | Azure OpenAI | 稳定 | 同上 |
 | `sophnet-gpt-5.5` | Sophnet | 备选 | 可能因 KEY_1 欠费随机 402 |
+| `sophnet-glm-5.2` | Sophnet | ⭐ **轻量推荐** | GLM 5.2，经 chat bridge |
+| `sophnet-glm-5.1` | Sophnet | 备选 | 旧版 GLM |
 | `sophnet-deepseekv4-pro` | Sophnet | 备选 | Sophnet 版 DeepSeek |
 | `sophnet-deepseekv4-flash` | Sophnet | 备选 | Sophnet 版 DeepSeek 轻量 |
 
@@ -280,9 +283,9 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 | Sonnet | `sophnet-claude-opus-4-7` | `ANTHROPIC_DEFAULT_SONNET_MODEL` |
 | Opus | `azure-gpt-5.5` | `ANTHROPIC_DEFAULT_OPUS_MODEL` |
 | Haiku | `deepseek-v4-flash` | `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
-| **GLM 5.1** | `sophnet-glm-5.1` | `ANTHROPIC_CUSTOM_MODEL_OPTION`（第 4 项） |
+| **GLM 5.2** | `sophnet-glm-5.2` | `ANTHROPIC_CUSTOM_MODEL_OPTION`（第 4 项） |
 
-> Claude Code 的 `/model` 选单只有 **Sonnet / Opus / Haiku + 1 个自定义项** 共 4 个选项。GLM 5.1 必须通过 `ANTHROPIC_CUSTOM_MODEL_OPTION` 添加；`availableModels` 填具体 model id 会因去重导致选单异常。
+> Claude Code 的 `/model` 选单只有 **Sonnet / Opus / Haiku + 1 个自定义项** 共 4 个选项。GLM 5.2 必须通过 `ANTHROPIC_CUSTOM_MODEL_OPTION` 添加；`availableModels` 填具体 model id 会因去重导致选单异常。
 
 **三档 + GLM 默认映射：**
 
@@ -291,7 +294,7 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 | Sonnet | `sophnet-claude-opus-4-7` | 日常编码主模型 |
 | Opus | `azure-gpt-5.5` | 规划、复杂任务 |
 | Haiku | `deepseek-v4-flash` | 轻量、快速 |
-| GLM 5.1 | `sophnet-glm-5.1` | 轻量中文 / 低成本 |
+| GLM 5.2 | `sophnet-glm-5.2` | 轻量中文 / 低成本 |
 
 ### 3.1 推荐：项目级 + 用户级配置（macOS）
 
@@ -309,9 +312,9 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
     { "name": "ANTHROPIC_DEFAULT_SONNET_MODEL", "value": "sophnet-claude-opus-4-7" },
     { "name": "ANTHROPIC_DEFAULT_OPUS_MODEL", "value": "azure-gpt-5.5" },
     { "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL", "value": "deepseek-v4-flash" },
-    { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION", "value": "sophnet-glm-5.1" },
-    { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME", "value": "GLM 5.1" },
-    { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION", "value": "轻量 · Sophnet GLM-5.1" },
+    { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION", "value": "sophnet-glm-5.2" },
+    { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME", "value": "GLM 5.2" },
+    { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION", "value": "轻量 · Sophnet GLM-5.2" },
     { "name": "ENABLE_TOOL_SEARCH", "value": "true" },
     { "name": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "value": "1" }
   ]
@@ -330,9 +333,9 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
     "ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION": "规划 · Azure GPT-5.5",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION": "极速 · DeepSeek V4 Flash（官方）",
-    "ANTHROPIC_CUSTOM_MODEL_OPTION": "sophnet-glm-5.1",
-    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "GLM 5.1",
-    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "轻量 · Sophnet GLM-5.1",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION": "sophnet-glm-5.2",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "GLM 5.2",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "轻量 · Sophnet GLM-5.2",
     "ENABLE_TOOL_SEARCH": "true",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   },
@@ -348,7 +351,7 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 | `ANTHROPIC_AUTH_TOKEN` | 填 LiteLLM `master_key`，Proxy 用它鉴权 |
 | `LITELLM_PROXY_*` | VS Code 扩展专用，与 `disableLoginPrompt` 配合跳过 Anthropic 登录页 |
 | `ANTHROPIC_DEFAULT_*_MODEL` | 覆盖 CC 默认的 `claude-sonnet-4-5` 等名字，必须与 `config.yaml` 别名一致 |
-| `ANTHROPIC_CUSTOM_MODEL_OPTION` | 第 4 个 `/model` 选项（本方案为 `sophnet-glm-5.1`） |
+| `ANTHROPIC_CUSTOM_MODEL_OPTION` | 第 4 个 `/model` 选项（本方案为 `sophnet-glm-5.2`） |
 | `ENABLE_TOOL_SEARCH` | 走第三方网关时建议开启 MCP tool 转发 |
 
 **③ 完全退出并重启 VS Code**（`Cmd+Q`），再打开本项目。
@@ -360,7 +363,7 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 ```
 /model azure-gpt-5.5          # Opus
 /model deepseek-v4-flash      # Haiku
-/model sophnet-glm-5.1        # GLM 5.1（或选单第 4 项）
+/model sophnet-glm-5.2        # GLM 5.2（或选单第 4 项）
 /model sophnet-claude-opus-4-7
 ```
 
@@ -427,12 +430,13 @@ wire_api = "responses"
 experimental_bearer_token = "sk-litellm-sophnet-azure-local"
 ```
 
-`~/.codex/models.json` 中当前 9 个可选模型（按菜单顺序）：
+`~/.codex/models.json` 中当前 10 个可选模型（按菜单顺序）：
 
 | 别名 | 标签 |
 |------|------|
 | `sophnet-claude-opus-4-7` | 主模型 |
-| `sophnet-glm-5.1` | 轻量 |
+| `sophnet-glm-5.2` | 轻量推荐 |
+| `sophnet-glm-5.1` | 轻量（旧版） |
 | `deepseek-v4-flash` | **推荐**（DeepSeek 官方） |
 | `deepseek-v4-pro` | 推理（DeepSeek 官方） |
 | `sophnet-gpt-5.5` | 通用 |

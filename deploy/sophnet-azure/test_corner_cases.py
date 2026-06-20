@@ -47,6 +47,7 @@ Expect = Literal["ok", "fail", "skip"]
 
 CHAT_MODELS = [
     "sophnet-glm-5.1",
+    "sophnet-glm-5.2",
     "sophnet-gpt-5.5",
     "sophnet-deepseekv4-pro",
     "sophnet-deepseekv4-flash",
@@ -59,7 +60,8 @@ CHAT_MODELS = [
 ]
 
 CLAUDE = "sophnet-claude-opus-4-7"
-GLM = "sophnet-glm-5.1"
+GLM = "sophnet-glm-5.2"
+GLM51 = "sophnet-glm-5.1"
 GPT55 = "sophnet-gpt-5.5"
 AZURE = "azure-gpt-5.4"
 AZURE55 = "azure-gpt-5.5"

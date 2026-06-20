@@ -5121,6 +5121,30 @@ def test_sanitize_tool_names_in_request_no_tools_is_noop():
     assert reverse == {}
 
 
+def test_fill_empty_custom_tool_names_assigns_placeholder():
+    """Sophnet/MiniMax 400 (2013) when custom tools have an empty name."""
+    optional_params = {
+        "tools": [
+            {
+                "type": "custom",
+                "name": "",
+                "input_schema": {"type": "object", "properties": {}},
+            },
+            {
+                "type": "custom",
+                "name": "exec_command",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"cmd": {"type": "string"}},
+                },
+            },
+        ]
+    }
+    AnthropicConfig._fill_empty_custom_tool_names(optional_params)
+    assert optional_params["tools"][0]["name"] == "litellm_unnamed_tool_0"
+    assert optional_params["tools"][1]["name"] == "exec_command"
+
+
 def test_requires_anthropic_request_sanitize_from_model_map():
     from litellm.utils import requires_anthropic_request_sanitize
 

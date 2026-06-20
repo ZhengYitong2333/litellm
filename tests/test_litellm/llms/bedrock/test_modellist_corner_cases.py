@@ -9,7 +9,7 @@ span the 4 upstream model families:
 
   - anthropic/Claude (Bedrock Converse): opus-4-5/4-6/4-7, sonnet-4-5/4-6/4-7
   - openai/GPT-5.x (Codex): gpt-5.4, gpt-5.5
-  - custom_openai/GLM (adapter): GLM-5.1
+  - custom_openai/GLM (adapter): GLM-5.1, GLM-5.2
   - custom_openai/DeepSeek (adapter): DeepSeek-V4-Pro/Flash
   - deepseek/DeepSeek (Anthropic passthrough): deepseek-v4-pro/flash
 """
@@ -33,6 +33,7 @@ MODELLIST = [
     ("deepseek-v4-flash", "deepseek-v4-flash", "deepseek_passthrough", False),
     # Custom OpenAI (adapter path)
     ("sophnet-glm-5.1", "custom_openai/GLM-5.1", "adapter", False),
+    ("sophnet-glm-5.2", "custom_openai/GLM-5.2", "adapter", False),
     ("sophnet-deepseekv4-pro", "custom_openai/DeepSeek-V4-Pro", "adapter", False),
     ("sophnet-deepseekv4-flash", "custom_openai/DeepSeek-V4-Flash", "adapter", False),
 ]
