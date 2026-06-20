@@ -14,6 +14,9 @@ from litellm.utils import get_valid_models
 _CREDENTIAL_LITELLM_PARAM_FIELDS = set(CredentialLiteLLMParams.model_fields)
 
 
+_CREDENTIAL_LITELLM_PARAM_FIELDS = set(CredentialLiteLLMParams.model_fields)
+
+
 def _check_wildcard_routing(model: str) -> bool:
     """
     Returns True if a model is a provider wildcard.
@@ -113,7 +116,10 @@ def get_key_models(
         all_models = list(
             user_api_key_dict.models
         )  # copy to avoid mutating cached objects
-        if SpecialModelNames.all_team_models.value in all_models:
+        if (
+            SpecialModelNames.all_team_models.value in all_models
+            and user_api_key_dict.team_id is not None
+        ):
             all_models = list(
                 user_api_key_dict.team_models
             )  # copy to avoid mutating cached objects

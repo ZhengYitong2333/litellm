@@ -28,6 +28,8 @@ litellm/tests/config_*.yaml
 litellm/tests/langfuse.log
 langfuse.log
 .langfuse.log
+.pin_list.txt
+.cov_new.xml
 litellm/tests/test_custom_logger.py
 litellm/tests/langfuse.log
 litellm/tests/dynamo*.log
@@ -174,3 +176,5 @@ litellm/proxy/_experimental/out/tools/vector-stores/index.html
 litellm/proxy/_experimental/out/usage/index.html
 litellm/proxy/_experimental/out/users/index.html
 litellm/proxy/_experimental/out/virtual-keys/index.html
+.vscode
+.pin_list.txt
