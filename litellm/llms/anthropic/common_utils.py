@@ -1251,21 +1251,24 @@ def strip_thinking_blocks_from_anthropic_messages(messages: List[Any]) -> List[A
         if not isinstance(m, dict):
             out.append(m)
             continue
-        mm = copy.deepcopy(m)
-        content = mm.get("content")
-        if isinstance(content, list):
-            filtered = [
-                b
-                for b in content
-                if not (
-                    isinstance(b, dict)
-                    and b.get("type") in ("thinking", "redacted_thinking")
-                )
-            ]
-            if not filtered:
-                continue
-            mm["content"] = filtered
-        out.append(mm)
+        content = m.get("content")
+        if not isinstance(content, list):
+            out.append(m)
+            continue
+        filtered = [
+            b
+            for b in content
+            if not (
+                isinstance(b, dict)
+                and b.get("type") in ("thinking", "redacted_thinking")
+            )
+        ]
+        if not filtered:
+            continue
+        if len(filtered) == len(content):
+            out.append(m)
+            continue
+        out.append({**m, "content": filtered})
     return out
 
 

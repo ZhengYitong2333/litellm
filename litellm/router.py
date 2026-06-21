@@ -2640,7 +2640,17 @@ class Router:
 
             fallback_response = None
             yielded_visible_output = False
-            stream_state = _ResponsesStreamState()
+            fallbacks: Optional[List] = initial_kwargs.get("fallbacks", self.fallbacks)
+            context_window_fallbacks: Optional[List] = initial_kwargs.get(
+                "context_window_fallbacks", self.context_window_fallbacks
+            )
+            content_policy_fallbacks: Optional[List] = initial_kwargs.get(
+                "content_policy_fallbacks", self.content_policy_fallbacks
+            )
+            track_stream_state = bool(
+                fallbacks or context_window_fallbacks or content_policy_fallbacks
+            )
+            stream_state = _ResponsesStreamState() if track_stream_state else None
 
             def _wrap_as_fallback_error(exc: Exception) -> "MidStreamFallbackError":
                 """
@@ -2650,8 +2660,10 @@ class Router:
                 fallback path below can engage. Non-retriable client errors
                 (4xx except 429) are surfaced unchanged.
                 """
-                generated = stream_state.get_generated_content()
-                error_payload = stream_state.to_error_payload()
+                generated = (
+                    stream_state.get_generated_content() if stream_state else None
+                )
+                error_payload = stream_state.to_error_payload() if stream_state else {}
                 return MidStreamFallbackError(
                     message=str(exc),
                     model=getattr(source_iterator, "model", None) or "",
@@ -2687,9 +2699,10 @@ class Router:
 
             try:
                 async for item in source_iterator:
-                    stream_state.observe(item)
-                    if stream_state.is_visible(item):
-                        yielded_visible_output = True
+                    if stream_state is not None:
+                        stream_state.observe(item)
+                        if stream_state.is_visible(item):
+                            yielded_visible_output = True
                     yield item
             except Exception as raw_exc:
                 if not _should_engage_fallback(raw_exc):
@@ -2719,12 +2732,20 @@ class Router:
                     initial_kwargs["original_function"] = (
                         self._ageneric_api_call_with_fallbacks_helper
                     )
-                    if stream_state.has_recoverable_state() or e.generated_content:
+                    if (
+                        stream_state is not None
+                        and stream_state.has_recoverable_state()
+                    ) or e.generated_content:
+                        continuation_payload = (
+                            stream_state.to_continuation_payload()
+                            if stream_state is not None
+                            else {}
+                        )
                         initial_kwargs["input"] = (
                             Router._build_responses_continuation_input(
                                 initial_kwargs.get("input"),
                                 e.generated_content,
-                                **stream_state.to_continuation_payload(),
+                                **continuation_payload,
                             )
                         )
                     else:

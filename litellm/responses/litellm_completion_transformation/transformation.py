@@ -312,19 +312,27 @@ class LiteLLMCompletionResponsesConfig:
         """
         Fix tool_call / tool_result pairing for OpenAI-compatible chat providers
         (e.g. DeepSeek) after Responses API input is converted to chat messages.
+
+        Uses a single deepcopy up front; downstream steps mutate that copy in place.
         """
-        messages = LiteLLMCompletionResponsesConfig._ensure_tool_results_have_corresponding_tool_calls(
-            messages=messages, tools=tools
+        if not messages:
+            return list(messages)
+
+        import copy
+
+        working: List[Any] = list(copy.deepcopy(messages))
+        working = LiteLLMCompletionResponsesConfig._ensure_tool_results_have_corresponding_tool_calls(
+            messages=working, tools=tools, copy_messages=False
         )
-        messages = LiteLLMCompletionResponsesConfig._ensure_assistant_tool_calls_have_tool_results(
-            messages=messages
+        working = LiteLLMCompletionResponsesConfig._ensure_assistant_tool_calls_have_tool_results(
+            messages=working, copy_messages=False
         )
-        messages = LiteLLMCompletionResponsesConfig._ensure_assistant_messages_have_content_or_tool_calls(
-            messages=messages
+        working = LiteLLMCompletionResponsesConfig._ensure_assistant_messages_have_content_or_tool_calls(
+            messages=working, copy_messages=False
         )
         return (
             LiteLLMCompletionResponsesConfig._sanitize_tool_call_arguments_in_messages(
-                messages=messages
+                messages=working
             )
         )
 
@@ -962,6 +970,8 @@ class LiteLLMCompletionResponsesConfig:
             ]
         ],
         tools: Optional[List[Any]] = None,
+        *,
+        copy_messages: bool = True,
     ) -> List[
         Union[
             AllMessageValues,
@@ -998,7 +1008,9 @@ class LiteLLMCompletionResponsesConfig:
                 ChatCompletionMessageToolCall,
                 Message,
             ]
-        ] = list(copy.deepcopy(messages))
+        ] = (
+            list(copy.deepcopy(messages)) if copy_messages else list(messages)
+        )
         messages_to_remove = []
 
         # Count non-tool messages to avoid removing all messages
@@ -1118,6 +1130,8 @@ class LiteLLMCompletionResponsesConfig:
     @staticmethod
     def _ensure_assistant_tool_calls_have_tool_results(
         messages: Sequence[Any],
+        *,
+        copy_messages: bool = True,
     ) -> List[Any]:
         """
         Ensure each assistant tool_call is followed by a tool message.
@@ -1131,7 +1145,9 @@ class LiteLLMCompletionResponsesConfig:
 
         import copy
 
-        fixed_messages: List[Any] = list(copy.deepcopy(messages))
+        fixed_messages: List[Any] = (
+            list(copy.deepcopy(messages)) if copy_messages else list(messages)
+        )
         i = 0
         while i < len(fixed_messages):
             message = fixed_messages[i]
@@ -1291,6 +1307,8 @@ class LiteLLMCompletionResponsesConfig:
     @staticmethod
     def _ensure_assistant_messages_have_content_or_tool_calls(
         messages: Sequence[Any],
+        *,
+        copy_messages: bool = True,
     ) -> List[Any]:
         """
         DeepSeek and other OpenAI-compatible providers reject assistant messages
@@ -1303,7 +1321,10 @@ class LiteLLMCompletionResponsesConfig:
         import copy
 
         fixed_messages: List[Any] = []
-        for message in list(copy.deepcopy(messages)):
+        source_messages = (
+            list(copy.deepcopy(messages)) if copy_messages else list(messages)
+        )
+        for message in source_messages:
             role = (
                 message.get("role")
                 if isinstance(message, dict)

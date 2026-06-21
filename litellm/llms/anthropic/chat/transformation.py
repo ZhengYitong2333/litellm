@@ -2078,11 +2078,6 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         )
         if strict_sanitize:
             messages = self._sanitize_request_messages(messages)
-            messages = sanitize_anthropic_messages_for_upstream(
-                messages=messages,
-                api_base=effective_api_base,
-                model=model,
-            )
 
         if (
             "tools" not in optional_params
