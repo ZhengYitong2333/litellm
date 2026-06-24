@@ -19,7 +19,6 @@ from litellm.llms.custom_httpx.aiohttp_transport import (
     LiteLLMAiohttpTransport,
 )
 
-
 # ── aiohttp transport layer tests ──────────────────────────────
 
 
@@ -165,6 +164,99 @@ async def test_aclose_completes_under_cancellation():
         await wrapper.aclose()
 
     assert aclose_completed
+
+
+@pytest.mark.asyncio
+async def test_custom_stream_wrapper_async_noop_chunks_do_not_busy_loop():
+    class InfiniteNoneAsyncStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            return None
+
+    wrapper = CustomStreamWrapper(
+        completion_stream=InfiniteNoneAsyncStream(),
+        model="test-model",
+        logging_obj=MagicMock(),
+        custom_llm_provider="openai",
+    )
+
+    result = await asyncio.wait_for(wrapper.__anext__(), timeout=1)
+
+    assert wrapper.sent_last_chunk is True
+    assert result.choices[0].finish_reason == "stop"
+
+
+def test_custom_stream_wrapper_sync_noop_chunks_do_not_busy_loop():
+    def infinite_none_stream():
+        while True:
+            yield None
+
+    wrapper = CustomStreamWrapper(
+        completion_stream=infinite_none_stream(),
+        model="test-model",
+        logging_obj=MagicMock(),
+        custom_llm_provider="openai",
+    )
+
+    result = wrapper.__next__()
+
+    assert wrapper.sent_last_chunk is True
+    assert result.choices[0].finish_reason == "stop"
+
+
+@pytest.mark.asyncio
+async def test_custom_stream_wrapper_aclose_after_partial_consume():
+    stream_closed = False
+
+    class FakePartialStream:
+        def __aiter__(self):
+            return self
+
+        def __init__(self):
+            self._index = 0
+
+        async def __anext__(self):
+            if self._index == 0:
+                self._index += 1
+                from litellm.types.utils import (
+                    Delta,
+                    ModelResponseStream,
+                    StreamingChoices,
+                )
+
+                return ModelResponseStream(
+                    id="chatcmpl-test",
+                    created=1234567890,
+                    model="test-model",
+                    object="chat.completion.chunk",
+                    choices=[
+                        StreamingChoices(
+                            finish_reason=None,
+                            index=0,
+                            delta=Delta(content="hi", role="assistant"),
+                        )
+                    ],
+                )
+            await asyncio.sleep(3600)
+
+        async def aclose(self):
+            nonlocal stream_closed
+            stream_closed = True
+
+    wrapper = CustomStreamWrapper(
+        completion_stream=FakePartialStream(),
+        model="test-model",
+        logging_obj=MagicMock(),
+        custom_llm_provider="openai",
+    )
+
+    async for _ in wrapper:
+        break
+    await wrapper.aclose()
+
+    assert stream_closed is True
 
 
 # ── Router stream_with_fallbacks cleanup tests ──────────────────

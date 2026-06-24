@@ -78,6 +78,7 @@ class BaseResponsesAPIStreamingIterator:
         self._persist_completed_response_before_logging = True
         self._stream_created_time: float = time.time()
         self._pending_failed_exception: Optional[Exception] = None
+        self._consecutive_noop_chunks: int = 0
 
         # track request context for hooks
         self.litellm_metadata = litellm_metadata
@@ -116,6 +117,43 @@ class BaseResponsesAPIStreamingIterator:
                 model=self.model or "",
                 llm_provider=self.custom_llm_provider or "",
             )
+
+    def _should_stop_after_noop_chunk(self) -> bool:
+        self._consecutive_noop_chunks += 1
+        if self._consecutive_noop_chunks >= 1000:
+            self.finished = True
+            return True
+        return False
+
+    def _iter_responses_sse_events(self, byte_iterator: Any) -> Any:
+        decoder = SSEDecoder()
+        for chunk in decoder._iter_chunks(byte_iterator):
+            yielded = False
+            for raw_line in chunk.splitlines():
+                line = raw_line.decode("utf-8")
+                sse = decoder.decode(line)
+                if sse:
+                    self._consecutive_noop_chunks = 0
+                    yielded = True
+                    yield sse
+            if not yielded and self._should_stop_after_noop_chunk():
+                return
+
+    async def _aiter_responses_sse_events(self, byte_iterator: Any) -> Any:
+        decoder = SSEDecoder()
+        async for chunk in decoder._aiter_chunks(byte_iterator):
+            yielded = False
+            for raw_line in chunk.splitlines():
+                line = raw_line.decode("utf-8")
+                sse = decoder.decode(line)
+                if sse:
+                    self._consecutive_noop_chunks = 0
+                    yielded = True
+                    yield sse
+            if not yielded:
+                if self._should_stop_after_noop_chunk():
+                    return
+                await asyncio.sleep(0)
 
     def _process_chunk(self, chunk) -> Optional[Any]:
         """Process a single chunk of data from the stream"""
@@ -713,7 +751,7 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             request_data,
             call_type,
         )
-        self.stream_iterator = SSEDecoder().aiter_bytes(response.aiter_bytes())
+        self.stream_iterator = self._aiter_responses_sse_events(response.aiter_bytes())
 
     def __aiter__(self):
         return self
@@ -737,6 +775,7 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                 if self.finished:
                     raise StopAsyncIteration
                 elif result is not None:
+                    self._consecutive_noop_chunks = 0
                     # Await hook directly instead of run_async_function
                     # (which spawns a thread + event loop per call)
                     result = await self._call_post_streaming_deployment_hook(
@@ -744,6 +783,9 @@ class ResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                     )
                     return result
                 # If result is None, continue the loop to get the next chunk
+                if self._should_stop_after_noop_chunk():
+                    raise StopAsyncIteration
+                await asyncio.sleep(0)
 
         except StopAsyncIteration:
             # Normal end of stream - don't log as failure
@@ -789,7 +831,7 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
             request_data,
             call_type,
         )
-        self.stream_iterator = SSEDecoder().iter_bytes(response.iter_bytes())
+        self.stream_iterator = self._iter_responses_sse_events(response.iter_bytes())
 
     def __iter__(self):
         return self
@@ -813,6 +855,7 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                 if self.finished:
                     raise StopIteration
                 elif result is not None:
+                    self._consecutive_noop_chunks = 0
                     # Sync path: use run_async_function for the hook
                     result = run_async_function(
                         async_function=self._call_post_streaming_deployment_hook,
@@ -820,6 +863,8 @@ class SyncResponsesAPIStreamingIterator(BaseResponsesAPIStreamingIterator):
                     )
                     return result
                 # If result is None, continue the loop to get the next chunk
+                if self._should_stop_after_noop_chunk():
+                    raise StopIteration
 
         except StopIteration:
             # Normal end of stream - don't log as failure

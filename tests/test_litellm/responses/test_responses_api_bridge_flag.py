@@ -45,6 +45,47 @@ class TestUseResponsesApiBridgeFlag:
             model="custom_openai/GLM-5.1",
         )
 
+    def test_azure_custom_tool_does_not_force_chat_bridge(self):
+        tools = [
+            {
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "freeform patch tool",
+                "format": {
+                    "type": "grammar",
+                    "syntax": "lark",
+                    "definition": "start: /.*/",
+                },
+            }
+        ]
+
+        assert (
+            _should_force_responses_to_chat_bridge(
+                api_base="https://example.services.ai.azure.com/openai/v1",
+                model="azure-gpt-5.5",
+                tools=tools,
+            )
+            is False
+        )
+
+    def test_azure_function_tools_still_force_chat_bridge(self):
+        tools = [
+            {
+                "type": "function",
+                "name": "exec_command",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"cmd": {"type": "string"}},
+                },
+            }
+        ]
+
+        assert _should_force_responses_to_chat_bridge(
+            api_base="https://example.services.ai.azure.com/openai/v1",
+            model="azure-gpt-5.5",
+            tools=tools,
+        )
+
     @patch(
         "litellm.responses.main.litellm_completion_transformation_handler.response_api_handler"
     )

@@ -2608,6 +2608,200 @@ class TestEnsureOutputItemContentPartAdded:
         assert events[1].part.type == "output_text"
         assert iterator.sent_content_part_added_event is True
 
+    def test_async_streaming_iterator_none_chunk_does_not_busy_loop(self):
+        import asyncio
+        from unittest.mock import Mock
+
+        from litellm.responses.litellm_completion_transformation.streaming_iterator import (
+            LiteLLMCompletionStreamingIterator,
+        )
+        from litellm.types.llms.openai import ResponsesAPIStreamEvents
+
+        class _NoneAsyncStream:
+            logging_obj = Mock()
+
+            async def __anext__(self):
+                return None
+
+        mock_stream_wrapper = _NoneAsyncStream()
+        iterator = LiteLLMCompletionStreamingIterator(
+            model="test-model",
+            litellm_custom_stream_wrapper=mock_stream_wrapper,
+            request_input="test",
+            responses_api_request={},
+        )
+        iterator.litellm_model_response = ModelResponse(
+            id="chatcmpl-test",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion",
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(content="", role="assistant"),
+                )
+            ],
+            usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        )
+        iterator.sent_response_created_event = True
+        iterator.sent_response_in_progress_event = True
+        iterator.sent_output_text_done_event = True
+        iterator.sent_output_content_part_done_event = True
+        iterator.sent_output_item_done_event = True
+
+        result = asyncio.run(asyncio.wait_for(iterator.__anext__(), timeout=1))
+
+        assert result.type == ResponsesAPIStreamEvents.RESPONSE_COMPLETED
+
+    def test_sync_streaming_iterator_none_chunk_does_not_busy_loop(self):
+        from unittest.mock import Mock
+
+        import litellm
+        from litellm.responses.litellm_completion_transformation.streaming_iterator import (
+            LiteLLMCompletionStreamingIterator,
+        )
+        from litellm.types.llms.openai import ResponsesAPIStreamEvents
+
+        mock_stream_wrapper = Mock(spec=litellm.CustomStreamWrapper)
+        mock_stream_wrapper.logging_obj = Mock()
+        mock_stream_wrapper.__next__ = Mock(return_value=None)
+
+        iterator = LiteLLMCompletionStreamingIterator(
+            model="test-model",
+            litellm_custom_stream_wrapper=mock_stream_wrapper,
+            request_input="test",
+            responses_api_request={},
+        )
+        iterator.litellm_model_response = ModelResponse(
+            id="chatcmpl-test",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion",
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(content="", role="assistant"),
+                )
+            ],
+            usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        )
+        iterator.sent_response_created_event = True
+        iterator.sent_response_in_progress_event = True
+        iterator.sent_output_text_done_event = True
+        iterator.sent_output_content_part_done_event = True
+        iterator.sent_output_item_done_event = True
+
+        result = next(iterator)
+
+        assert result.type == ResponsesAPIStreamEvents.RESPONSE_COMPLETED
+
+    def test_async_streaming_iterator_empty_chunks_do_not_busy_loop(self):
+        import asyncio
+        from unittest.mock import Mock
+
+        from litellm.responses.litellm_completion_transformation.streaming_iterator import (
+            LiteLLMCompletionStreamingIterator,
+        )
+        from litellm.types.llms.openai import ResponsesAPIStreamEvents
+        from litellm.types.utils import ModelResponseStream
+
+        empty_chunk = ModelResponseStream(
+            id="chatcmpl-empty",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion.chunk",
+            choices=[],
+        )
+
+        class _EmptyAsyncStream:
+            logging_obj = Mock()
+
+            async def __anext__(self):
+                return empty_chunk
+
+        iterator = LiteLLMCompletionStreamingIterator(
+            model="test-model",
+            litellm_custom_stream_wrapper=_EmptyAsyncStream(),
+            request_input="test",
+            responses_api_request={},
+        )
+        iterator.litellm_model_response = ModelResponse(
+            id="chatcmpl-test",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion",
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(content="", role="assistant"),
+                )
+            ],
+            usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        )
+        iterator.sent_response_created_event = True
+        iterator.sent_response_in_progress_event = True
+        iterator.sent_output_text_done_event = True
+        iterator.sent_output_content_part_done_event = True
+        iterator.sent_output_item_done_event = True
+
+        result = asyncio.run(asyncio.wait_for(iterator.__anext__(), timeout=1))
+
+        assert result.type == ResponsesAPIStreamEvents.RESPONSE_COMPLETED
+
+    def test_sync_streaming_iterator_empty_chunks_do_not_busy_loop(self):
+        from unittest.mock import Mock
+
+        import litellm
+        from litellm.responses.litellm_completion_transformation.streaming_iterator import (
+            LiteLLMCompletionStreamingIterator,
+        )
+        from litellm.types.llms.openai import ResponsesAPIStreamEvents
+        from litellm.types.utils import ModelResponseStream
+
+        empty_chunk = ModelResponseStream(
+            id="chatcmpl-empty",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion.chunk",
+            choices=[],
+        )
+        mock_stream_wrapper = Mock(spec=litellm.CustomStreamWrapper)
+        mock_stream_wrapper.logging_obj = Mock()
+        mock_stream_wrapper.__next__ = Mock(return_value=empty_chunk)
+
+        iterator = LiteLLMCompletionStreamingIterator(
+            model="test-model",
+            litellm_custom_stream_wrapper=mock_stream_wrapper,
+            request_input="test",
+            responses_api_request={},
+        )
+        iterator.litellm_model_response = ModelResponse(
+            id="chatcmpl-test",
+            created=1234567890,
+            model="test-model",
+            object="chat.completion",
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(content="", role="assistant"),
+                )
+            ],
+            usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        )
+        iterator.sent_response_created_event = True
+        iterator.sent_response_in_progress_event = True
+        iterator.sent_output_text_done_event = True
+        iterator.sent_output_content_part_done_event = True
+        iterator.sent_output_item_done_event = True
+
+        result = next(iterator)
+
+        assert result.type == ResponsesAPIStreamEvents.RESPONSE_COMPLETED
+
     def test_emit_response_completed_uses_stream_finish_reason(self):
         """
         When the assembled model response carries finish_reason="content_filter"

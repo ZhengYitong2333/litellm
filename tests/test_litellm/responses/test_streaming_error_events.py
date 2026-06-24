@@ -1,3 +1,4 @@
+import asyncio
 import json
 from unittest.mock import Mock, patch
 
@@ -311,6 +312,53 @@ class _BrokenAsyncResponse:
     async def aiter_bytes(self):
         yield b": keep-alive\n\n"
         raise httpx.ReadError("async stream disconnected")
+
+
+class _NoopSyncResponse:
+    headers = {}
+
+    def iter_bytes(self):
+        while True:
+            yield b": keep-alive\n\n"
+
+
+class _NoopAsyncResponse:
+    headers = {}
+
+    async def aiter_bytes(self):
+        while True:
+            yield b": keep-alive\n\n"
+
+
+def test_sync_responses_stream_noop_chunks_do_not_busy_loop():
+    iterator = SyncResponsesAPIStreamingIterator(
+        response=_NoopSyncResponse(),
+        model="gpt-5.5",
+        responses_api_provider_config=Mock(spec=BaseResponsesAPIConfig),
+        logging_obj=_mock_logging_obj(),
+        custom_llm_provider="openai",
+    )
+
+    with pytest.raises(StopIteration):
+        next(iterator)
+
+    assert iterator.finished is True
+
+
+@pytest.mark.asyncio
+async def test_async_responses_stream_noop_chunks_do_not_busy_loop():
+    iterator = ResponsesAPIStreamingIterator(
+        response=_NoopAsyncResponse(),
+        model="gpt-5.5",
+        responses_api_provider_config=Mock(spec=BaseResponsesAPIConfig),
+        logging_obj=_mock_logging_obj(),
+        custom_llm_provider="openai",
+    )
+
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(iterator.__anext__(), timeout=1)
+
+    assert iterator.finished is True
 
 
 def test_sync_responses_stream_transport_disconnect_logs_failure():

@@ -7010,6 +7010,7 @@ async def async_data_generator(  # noqa: PLR0915
     response, user_api_key_dict: UserAPIKeyAuth, request_data: dict
 ):
     verbose_proxy_logger.debug("inside generator")
+    stream_iterator = response
     try:
         error_message: Optional[str] = None
         requested_model_from_client = _get_client_requested_model_for_streaming(
@@ -7090,6 +7091,9 @@ async def async_data_generator(  # noqa: PLR0915
         if not request_data.get("_litellm_skip_openai_stream_done"):
             done_message = "[DONE]"
             yield f"data: {done_message}\n\n"
+    except asyncio.CancelledError:
+        verbose_proxy_logger.debug("async_data_generator: client disconnected")
+        raise
     except Exception as e:
         verbose_proxy_logger.exception(
             "litellm.proxy.proxy_server.async_data_generator(): Exception occured - {}".format(
@@ -7129,14 +7133,18 @@ async def async_data_generator(  # noqa: PLR0915
         # clients disconnect mid-stream.
         # Shield from cancellation so the close awaits can complete.
         with anyio.CancelScope(shield=True):
-            if hasattr(response, "aclose"):
-                try:
-                    await response.aclose()
-                except BaseException as e:
-                    verbose_proxy_logger.debug(
-                        "async_data_generator: error closing response stream: %s",
-                        e,
-                    )
+            close_targets = [response]
+            if stream_iterator is not response:
+                close_targets.append(stream_iterator)
+            for close_target in close_targets:
+                if hasattr(close_target, "aclose"):
+                    try:
+                        await close_target.aclose()
+                    except BaseException as e:
+                        verbose_proxy_logger.debug(
+                            "async_data_generator: error closing response stream: %s",
+                            e,
+                        )
 
 
 def select_data_generator(

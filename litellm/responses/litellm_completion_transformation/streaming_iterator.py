@@ -1,3 +1,4 @@
+import asyncio
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Union, cast
@@ -42,6 +43,8 @@ from litellm.types.utils import (
     StreamingChoices,
     TextCompletionResponse,
 )
+
+_MAX_CONSECUTIVE_NOOP_CHUNKS = 1000
 
 
 class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
@@ -109,6 +112,29 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         self._message_item_added_after_reasoning = False
         self._accumulated_reasoning_content_parts: List[str] = []
         self._accumulated_provider_specific_fields: Dict[str, Any] = {}
+        self._consecutive_noop_chunks: int = 0
+
+    def _reset_noop_chunks(self) -> None:
+        self._consecutive_noop_chunks = 0
+
+    def _should_stop_after_noop_chunk(self) -> bool:
+        self._consecutive_noop_chunks += 1
+        return self._consecutive_noop_chunks >= _MAX_CONSECUTIVE_NOOP_CHUNKS
+
+    async def _after_noop_chunk_async(
+        self,
+    ) -> Optional[Union[ResponsesAPIStreamingResponse, ResponseCompletedEvent]]:
+        if self._should_stop_after_noop_chunk():
+            return self.common_done_event_logic(sync_mode=False)
+        await asyncio.sleep(0)
+        return None
+
+    def _after_noop_chunk_sync(
+        self,
+    ) -> Optional[Union[ResponsesAPIStreamingResponse, ResponseCompletedEvent]]:
+        if self._should_stop_after_noop_chunk():
+            return self.common_done_event_logic(sync_mode=True)
+        return None
 
     def _get_or_assign_tool_output_index(self, call_id: str) -> int:
         existing = self._tool_output_index_by_call_id.get(call_id)
@@ -899,13 +925,17 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                     return result
                 # Emit any pending output_item or other response events before reading a new chunk
                 if self._pending_response_events:
+                    self._reset_noop_chunks()
                     return self._pending_response_events.pop(0)
                 # Emit any pending tool events before reading a new chunk
                 if self._pending_tool_events:
+                    self._reset_noop_chunks()
                     return self._pending_tool_events.pop(0)
 
                 try:
                     chunk = await self.litellm_custom_stream_wrapper.__anext__()
+                    if chunk is None:
+                        return self.common_done_event_logic(sync_mode=False)
                     if chunk is not None:
                         chunk = cast(ModelResponseStream, chunk)
                         self._ensure_output_item_for_chunk(chunk)
@@ -995,7 +1025,15 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                             self._pending_response_events.append(response_api_chunk)
 
                     if self._pending_response_events:
+                        self._reset_noop_chunks()
                         return self._pending_response_events.pop(0)
+                    if self._pending_tool_events:
+                        self._reset_noop_chunks()
+                        return self._pending_tool_events.pop(0)
+
+                    done_event = await self._after_noop_chunk_async()
+                    if done_event is not None:
+                        return done_event
 
                 except StopAsyncIteration:
                     return self.common_done_event_logic(sync_mode=False)
@@ -1024,12 +1062,16 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                     return result
                 # Emit any pending output_item or other response events before reading a new chunk
                 if self._pending_response_events:
+                    self._reset_noop_chunks()
                     return self._pending_response_events.pop(0)
                 # Emit any pending tool events before reading a new chunk
                 if self._pending_tool_events:
+                    self._reset_noop_chunks()
                     return self._pending_tool_events.pop(0)
                 try:
                     chunk = self.litellm_custom_stream_wrapper.__next__()
+                    if chunk is None:
+                        return self.common_done_event_logic(sync_mode=True)
                     self._ensure_output_item_for_chunk(chunk)
                     # Accumulate provider_specific_fields from chunk and delta
                     for src in (
@@ -1112,6 +1154,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
 
                     # Emit any just-queued output_item event
                     if self._pending_response_events:
+                        self._reset_noop_chunks()
                         return self._pending_response_events.pop(0)
                     response_api_chunk = (
                         self._transform_chat_completion_chunk_to_response_api_chunk(
@@ -1120,8 +1163,11 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                     )
                     if response_api_chunk:
                         self._pending_response_events.append(response_api_chunk)
+                        self._reset_noop_chunks()
                         return self._pending_response_events.pop(0)
-                    # Otherwise, loop to next chunk
+                    done_event = self._after_noop_chunk_sync()
+                    if done_event is not None:
+                        return done_event
                 except StopIteration:
                     return self.common_done_event_logic(sync_mode=True)
         except Exception as e:

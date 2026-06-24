@@ -48,6 +48,8 @@ from litellm.types.utils import (
 from ..exceptions import OpenAIError
 from .core_helpers import map_finish_reason, process_response_headers
 from .exception_mapping_utils import exception_type
+
+_MAX_CONSECUTIVE_NOOP_CHUNKS = 1000
 from .llm_response_utils.get_api_base import get_api_base
 from .rules import Rules
 
@@ -116,6 +118,7 @@ class CustomStreamWrapper:
         self.sent_first_chunk = False
         self.sent_last_chunk = False
         self._stream_created_time: float = time.time()
+        self._consecutive_noop_chunks: int = 0
 
         litellm_params: GenericLiteLLMParams = GenericLiteLLMParams(
             **self.logging_obj.model_call_details.get("litellm_params", {})
@@ -220,6 +223,29 @@ class CustomStreamWrapper:
                 model=self.model or "",
                 llm_provider=self.custom_llm_provider or "",
             )
+
+    def _reset_noop_chunks(self) -> None:
+        self._consecutive_noop_chunks = 0
+
+    def _register_noop_chunk(self) -> bool:
+        self._consecutive_noop_chunks += 1
+        return self._consecutive_noop_chunks >= _MAX_CONSECUTIVE_NOOP_CHUNKS
+
+    def _finish_stream_after_noop_limit(
+        self, *, cache_hit: bool, sync_mode: bool
+    ) -> "ModelResponseStream":
+        self.sent_last_chunk = True
+        processed_chunk = self.finish_reason_handler()
+        if self.stream_options is None:
+            usage = calculate_total_usage(chunks=self.chunks)
+            processed_chunk._hidden_params["usage"] = usage
+        if sync_mode and not litellm.disable_streaming_logging:
+            executor.submit(
+                self.run_success_logging_and_cache_storage,
+                processed_chunk,
+                cache_hit,
+            )
+        return processed_chunk
 
     def __iter__(self) -> Iterator["ModelResponseStream"]:
         return self
@@ -1902,75 +1928,87 @@ class CustomStreamWrapper:
                     chunk = self.completion_stream
                 else:
                     chunk = next(self.completion_stream)  # type: ignore[arg-type]
-                if chunk is not None and chunk != b"":
-                    print_verbose(
-                        f"PROCESSED CHUNK PRE CHUNK CREATOR: {chunk.decode('utf-8', errors='replace') if isinstance(chunk, bytes) else chunk}; custom_llm_provider: {self.custom_llm_provider}"
-                    )
-                    response: Optional[ModelResponseStream] = self.chunk_creator(
-                        chunk=chunk
-                    )
-                    print_verbose(f"PROCESSED CHUNK POST CHUNK CREATOR: {response}")
-
-                    if response is None:
-                        continue
-                    if self.logging_obj.completion_start_time is None:
-                        self.logging_obj._update_completion_start_time(
-                            completion_start_time=datetime.datetime.now()
+                if chunk is None or chunk == b"":
+                    if self._register_noop_chunk():
+                        return self._finish_stream_after_noop_limit(
+                            cache_hit=cache_hit, sync_mode=True
                         )
-                    ## LOGGING
-                    if not litellm.disable_streaming_logging:
-                        executor.submit(
-                            self.run_success_logging_and_cache_storage,
-                            response,
-                            cache_hit,
-                        )  # log response
-                    if response.choices:
-                        choice = response.choices[0]
-                        if isinstance(choice, StreamingChoices):
-                            self.response_uptil_now += (
-                                choice.delta.get("content", "") or ""
+                    continue
+                print_verbose(
+                    f"PROCESSED CHUNK PRE CHUNK CREATOR: {chunk.decode('utf-8', errors='replace') if isinstance(chunk, bytes) else chunk}; custom_llm_provider: {self.custom_llm_provider}"
+                )
+                response: Optional[ModelResponseStream] = self.chunk_creator(
+                    chunk=chunk
+                )
+                print_verbose(f"PROCESSED CHUNK POST CHUNK CREATOR: {response}")
+
+                if response is None:
+                    if self._register_noop_chunk():
+                        return self._finish_stream_after_noop_limit(
+                            cache_hit=cache_hit, sync_mode=True
+                        )
+                    continue
+                self._reset_noop_chunks()
+                if self.logging_obj.completion_start_time is None:
+                    self.logging_obj._update_completion_start_time(
+                        completion_start_time=datetime.datetime.now()
+                    )
+                ## LOGGING
+                if not litellm.disable_streaming_logging:
+                    executor.submit(
+                        self.run_success_logging_and_cache_storage,
+                        response,
+                        cache_hit,
+                    )  # log response
+                if response.choices:
+                    choice = response.choices[0]
+                    if isinstance(choice, StreamingChoices):
+                        self.response_uptil_now += choice.delta.get("content", "") or ""
+                    else:
+                        self.response_uptil_now += ""
+                self.rules.post_call_rules(
+                    input=self.response_uptil_now, model=self.model
+                )
+                # HANDLE STREAM OPTIONS
+                self.chunks.append(response)
+
+                # Add mcp_list_tools to first chunk if present
+                if not self.sent_first_chunk and response.choices:
+                    response = self._add_mcp_list_tools_to_first_chunk(response)
+                    self.sent_first_chunk = True
+
+                # ModelResponseStream declares `usage` as a field, so
+                # hasattr(response, "usage") is always True — must check
+                # `is not None` to avoid running this path on every chunk.
+                if getattr(response, "usage", None) is not None:
+                    obj_dict = response.model_dump()
+
+                    if "usage" in obj_dict:
+                        del obj_dict["usage"]
+
+                    response = self.model_response_creator(
+                        chunk=obj_dict, hidden_params=response._hidden_params
+                    )
+                    ## check if empty
+                    is_empty = is_model_response_stream_empty(
+                        model_response=cast(ModelResponseStream, response)
+                    )
+
+                    if is_empty:
+                        if self._register_noop_chunk():
+                            return self._finish_stream_after_noop_limit(
+                                cache_hit=cache_hit, sync_mode=True
                             )
-                        else:
-                            self.response_uptil_now += ""
-                    self.rules.post_call_rules(
-                        input=self.response_uptil_now, model=self.model
-                    )
-                    # HANDLE STREAM OPTIONS
-                    self.chunks.append(response)
-
-                    # Add mcp_list_tools to first chunk if present
-                    if not self.sent_first_chunk and response.choices:
-                        response = self._add_mcp_list_tools_to_first_chunk(response)
-                        self.sent_first_chunk = True
-
-                    # ModelResponseStream declares `usage` as a field, so
-                    # hasattr(response, "usage") is always True — must check
-                    # `is not None` to avoid running this path on every chunk.
-                    if getattr(response, "usage", None) is not None:
-                        obj_dict = response.model_dump()
-
-                        if "usage" in obj_dict:
-                            del obj_dict["usage"]
-
-                        response = self.model_response_creator(
-                            chunk=obj_dict, hidden_params=response._hidden_params
-                        )
-                        ## check if empty
-                        is_empty = is_model_response_stream_empty(
-                            model_response=cast(ModelResponseStream, response)
-                        )
-
-                        if is_empty:
-                            continue
-                    # add usage as hidden param
-                    if self.sent_last_chunk is True and self.stream_options is None:
-                        usage = calculate_total_usage(chunks=self.chunks)
-                        response._hidden_params["usage"] = usage
-                        self._last_returned_hidden_params = response._hidden_params
-                        # Add MCP metadata to final chunk if present
-                        response = self._add_mcp_metadata_to_final_chunk(response)
-                    # RETURN RESULT
-                    return response
+                        continue
+                # add usage as hidden param
+                if self.sent_last_chunk is True and self.stream_options is None:
+                    usage = calculate_total_usage(chunks=self.chunks)
+                    response._hidden_params["usage"] = usage
+                    self._last_returned_hidden_params = response._hidden_params
+                    # Add MCP metadata to final chunk if present
+                    response = self._add_mcp_metadata_to_final_chunk(response)
+                # RETURN RESULT
+                return response
 
         except StopIteration:
             if self.sent_last_chunk is True:
@@ -2084,21 +2122,45 @@ class CustomStreamWrapper:
                 await self.fetch_stream()
 
             if is_async_iterable(self.completion_stream):
-                async for chunk in self.completion_stream:  # type: ignore[union-attr]
-                    if chunk == "None" or chunk is None:
-                        continue  # skip None chunks
+                async_stream_iter = self.completion_stream.__aiter__()  # type: ignore[union-attr]
+                while True:
+                    try:
+                        chunk = await async_stream_iter.__anext__()
+                    except StopAsyncIteration:
+                        raise StopAsyncIteration
 
-                    elif (
+                    if chunk == "None" or chunk is None or chunk == b"":
+                        if self._register_noop_chunk():
+                            return self._finish_stream_after_noop_limit(
+                                cache_hit=cache_hit, sync_mode=False
+                            )
+                        await asyncio.sleep(0)
+                        continue
+
+                    if (
                         self.custom_llm_provider == "gemini"
                         and hasattr(chunk, "parts")
                         and len(chunk.parts) == 0
                     ):
+                        if self._register_noop_chunk():
+                            return self._finish_stream_after_noop_limit(
+                                cache_hit=cache_hit, sync_mode=False
+                            )
+                        await asyncio.sleep(0)
                         continue
+
                     processed_chunk: Optional[ModelResponseStream] = self.chunk_creator(
                         chunk=chunk
                     )
                     if processed_chunk is None:
+                        if self._register_noop_chunk():
+                            return self._finish_stream_after_noop_limit(
+                                cache_hit=cache_hit, sync_mode=False
+                            )
+                        await asyncio.sleep(0)
                         continue
+
+                    self._reset_noop_chunks()
 
                     if self.logging_obj.completion_start_time is None:
                         self.logging_obj._update_completion_start_time(
@@ -2116,7 +2178,6 @@ class CustomStreamWrapper:
                     self.rules.post_call_rules(
                         input=self.response_uptil_now, model=self.model
                     )
-                    # Add mcp_list_tools to first chunk if present
                     if not self.sent_first_chunk and processed_chunk.choices:
                         processed_chunk = self._add_mcp_list_tools_to_first_chunk(
                             processed_chunk
@@ -2129,13 +2190,8 @@ class CustomStreamWrapper:
                     )
 
                     if _has_usage:
-                        # Store a copy ONLY when usage stripping below will mutate
-                        # the chunk. For non-usage chunks (vast majority), store
-                        # directly to avoid expensive model_copy() per chunk.
                         self.chunks.append(processed_chunk.model_copy())
 
-                        # Strip usage from the outgoing chunk so it's not sent twice
-                        # (once in the chunk, once in _hidden_params).
                         obj_dict = processed_chunk.model_dump()
                         if "usage" in obj_dict:
                             del obj_dict["usage"]
@@ -2146,12 +2202,15 @@ class CustomStreamWrapper:
                             model_response=cast(ModelResponseStream, processed_chunk)
                         )
                         if is_empty:
+                            if self._register_noop_chunk():
+                                return self._finish_stream_after_noop_limit(
+                                    cache_hit=cache_hit, sync_mode=False
+                                )
+                            await asyncio.sleep(0)
                             continue
                     else:
-                        # No usage data — safe to store directly without copying
                         self.chunks.append(processed_chunk)
 
-                    # add usage as hidden param
                     if self.sent_last_chunk is True and self.stream_options is None:
                         usage = calculate_total_usage(chunks=self.chunks)
                         processed_chunk._hidden_params["usage"] = usage
@@ -2159,18 +2218,15 @@ class CustomStreamWrapper:
                             processed_chunk._hidden_params
                         )
 
-                    # Call post-call streaming deployment hook for final chunk
                     if self.sent_last_chunk is True:
                         processed_chunk = (
                             await self._call_post_streaming_deployment_hook(
                                 processed_chunk
                             )
                         )
-                        # Add MCP metadata to final chunk if present (after hooks)
                         processed_chunk = self._add_mcp_metadata_to_final_chunk(processed_chunk)  # type: ignore[reportArgumentType]
 
                     return processed_chunk
-                raise StopAsyncIteration
             else:  # temporary patch for non-aiohttp async calls
                 # example - boto3 bedrock llms
                 while True:
@@ -2182,24 +2238,34 @@ class CustomStreamWrapper:
                         chunk = await asyncio.to_thread(_next_sync_or_exhausted, self.completion_stream)  # type: ignore[arg-type]
                         if chunk is _SYNC_ITER_EXHAUSTED:
                             raise StopAsyncIteration
-                    if chunk is not None and chunk != b"":
-                        processed_chunk = self.chunk_creator(chunk=chunk)
-                        if processed_chunk is None:
-                            continue
-
-                        choice = processed_chunk.choices[0]
-                        if isinstance(choice, StreamingChoices):
-                            self.response_uptil_now += (
-                                choice.delta.get("content", "") or ""
+                    if chunk is None or chunk == b"":
+                        if self._register_noop_chunk():
+                            return self._finish_stream_after_noop_limit(
+                                cache_hit=cache_hit, sync_mode=False
                             )
-                        else:
-                            self.response_uptil_now += ""
-                        self.rules.post_call_rules(
-                            input=self.response_uptil_now, model=self.model
-                        )
-                        # RETURN RESULT
-                        self.chunks.append(processed_chunk)
-                        return processed_chunk
+                        await asyncio.sleep(0)
+                        continue
+                    processed_chunk = self.chunk_creator(chunk=chunk)
+                    if processed_chunk is None:
+                        if self._register_noop_chunk():
+                            return self._finish_stream_after_noop_limit(
+                                cache_hit=cache_hit, sync_mode=False
+                            )
+                        await asyncio.sleep(0)
+                        continue
+
+                    self._reset_noop_chunks()
+
+                    choice = processed_chunk.choices[0]
+                    if isinstance(choice, StreamingChoices):
+                        self.response_uptil_now += choice.delta.get("content", "") or ""
+                    else:
+                        self.response_uptil_now += ""
+                    self.rules.post_call_rules(
+                        input=self.response_uptil_now, model=self.model
+                    )
+                    self.chunks.append(processed_chunk)
+                    return processed_chunk
         except (StopAsyncIteration, StopIteration):
             if self.sent_last_chunk is True:
                 # log the final chunk with accurate streaming values

@@ -672,7 +672,19 @@ def _supports_sophnet_native_responses_api(model: str) -> bool:
     return "gpt-5.5" in model.lower()
 
 
-def _should_force_responses_to_chat_bridge(api_base: str, model: str) -> bool:
+def _has_responses_custom_tool(tools: Optional[Iterable[ToolParam]]) -> bool:
+    if tools is None:
+        return False
+    return any(
+        isinstance(tool, dict) and tool.get("type") == "custom" for tool in tools
+    )
+
+
+def _should_force_responses_to_chat_bridge(
+    api_base: str,
+    model: str,
+    tools: Optional[Iterable[ToolParam]] = None,
+) -> bool:
     """
     Codex /v1/responses: route through chat-completions bridge for providers
     whose native Responses API rejects Codex payloads or is not OpenAI-compatible.
@@ -691,7 +703,7 @@ def _should_force_responses_to_chat_bridge(api_base: str, model: str) -> bool:
     if any(host in normalized_api_base for host in minimax_hosts):
         return True
     if any(host in normalized_api_base for host in azure_hosts):
-        return True
+        return not _has_responses_custom_tool(tools)
     if "sophnet.com" in normalized_api_base:
         return not _supports_sophnet_native_responses_api(model=model)
     return False
@@ -1006,7 +1018,9 @@ def responses(
             use_chat_completions_api or _from_chat_completions_prefix
         )
         _api_base = str(litellm_params.api_base or kwargs.get("api_base") or "")
-        if _should_force_responses_to_chat_bridge(api_base=_api_base, model=model):
+        if _should_force_responses_to_chat_bridge(
+            api_base=_api_base, model=model, tools=tools
+        ):
             use_chat_completions_api = True
 
         model, custom_llm_provider = _resolve_model_provider_for_responses(
