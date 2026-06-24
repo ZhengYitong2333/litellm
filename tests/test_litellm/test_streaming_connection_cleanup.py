@@ -167,6 +167,88 @@ async def test_aclose_completes_under_cancellation():
 
 
 @pytest.mark.asyncio
+async def test_custom_stream_wrapper_async_anext_reuses_stream_iterator():
+    """Each __anext__ must advance the same underlying async stream.
+
+    OpenAI AsyncStream returns a fresh iterator from __aiter__(); recreating it on
+    every __anext__ replays the first chunk forever and pegs CPU at 100%.
+    """
+    import time
+
+    from litellm.litellm_core_utils.litellm_logging import Logging
+    from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
+
+    stream_chunks = [
+        ModelResponseStream(
+            id="chatcmpl-a",
+            created=1742056047,
+            model="gpt-4o",
+            object="chat.completion.chunk",
+            choices=[
+                StreamingChoices(
+                    finish_reason=None,
+                    index=0,
+                    delta=Delta(content="a", role="assistant"),
+                )
+            ],
+        ),
+        ModelResponseStream(
+            id="chatcmpl-b",
+            created=1742056047,
+            model="gpt-4o",
+            object="chat.completion.chunk",
+            choices=[
+                StreamingChoices(
+                    finish_reason=None,
+                    index=0,
+                    delta=Delta(content="b", role="assistant"),
+                )
+            ],
+        ),
+    ]
+
+    class FreshIteratorStream:
+        def __aiter__(self):
+            return _FreshIter(list(stream_chunks))
+
+    class _FreshIter:
+        def __init__(self, chunks):
+            self._chunks = chunks
+            self._index = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._index >= len(self._chunks):
+                raise StopAsyncIteration
+            chunk = self._chunks[self._index]
+            self._index += 1
+            return chunk
+
+    wrapper = CustomStreamWrapper(
+        completion_stream=FreshIteratorStream(),
+        model="gpt-4o",
+        logging_obj=Logging(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+            call_type="completion",
+            start_time=time.time(),
+            litellm_call_id="12345",
+            function_id="1245",
+        ),
+        custom_llm_provider="bedrock",
+    )
+
+    first = await wrapper.__anext__()
+    second = await wrapper.__anext__()
+
+    assert first.choices[0].delta.get("content") == "a"
+    assert second.choices[0].delta.get("content") == "b"
+
+
+@pytest.mark.asyncio
 async def test_custom_stream_wrapper_async_noop_chunks_do_not_busy_loop():
     class InfiniteNoneAsyncStream:
         def __aiter__(self):

@@ -119,6 +119,7 @@ class CustomStreamWrapper:
         self.sent_last_chunk = False
         self._stream_created_time: float = time.time()
         self._consecutive_noop_chunks: int = 0
+        self._stream_iter: Any = None
 
         litellm_params: GenericLiteLLMParams = GenericLiteLLMParams(
             **self.logging_obj.model_call_details.get("litellm_params", {})
@@ -227,6 +228,11 @@ class CustomStreamWrapper:
     def _reset_noop_chunks(self) -> None:
         self._consecutive_noop_chunks = 0
 
+    def _get_async_stream_iter(self) -> Any:
+        if self._stream_iter is None:
+            self._stream_iter = self.completion_stream.__aiter__()  # type: ignore[union-attr]
+        return self._stream_iter
+
     def _register_noop_chunk(self) -> bool:
         self._consecutive_noop_chunks += 1
         return self._consecutive_noop_chunks >= _MAX_CONSECUTIVE_NOOP_CHUNKS
@@ -257,6 +263,7 @@ class CustomStreamWrapper:
         if self.completion_stream is not None:
             stream_to_close = self.completion_stream
             self.completion_stream = None
+            self._stream_iter = None
             # Shield from anyio cancellation so cleanup awaits can complete.
             # Without this, CancelledError is thrown into every await during
             # task group cancellation, preventing HTTP connection release.
@@ -2122,11 +2129,12 @@ class CustomStreamWrapper:
                 await self.fetch_stream()
 
             if is_async_iterable(self.completion_stream):
-                async_stream_iter = self.completion_stream.__aiter__()  # type: ignore[union-attr]
+                async_stream_iter = self._get_async_stream_iter()
                 while True:
                     try:
                         chunk = await async_stream_iter.__anext__()
                     except StopAsyncIteration:
+                        self._stream_iter = None
                         raise StopAsyncIteration
 
                     if chunk == "None" or chunk is None or chunk == b"":
