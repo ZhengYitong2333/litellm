@@ -15,8 +15,12 @@ sys.path.insert(
 )  # Adds the parent directory to the system path
 
 import litellm
-from litellm.responses.main import _should_force_responses_to_chat_bridge
+from litellm.responses.main import (
+    _resolve_native_azure_responses_api_config,
+    _should_force_responses_to_chat_bridge,
+)
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+from litellm.types.router import GenericLiteLLMParams
 
 
 class TestUseResponsesApiBridgeFlag:
@@ -44,6 +48,59 @@ class TestUseResponsesApiBridgeFlag:
             api_base="https://www.sophnet.com/api/open-apis/v1",
             model="custom_openai/GLM-5.1",
         )
+
+    def test_openai_model_with_azure_api_base_uses_azure_responses_config(self):
+        openai_config = litellm.OpenAIResponsesAPIConfig()
+        azure_api_base = (
+            "https://example.services.ai.azure.com/api/projects/foo/openai/v1"
+        )
+
+        resolved = _resolve_native_azure_responses_api_config(
+            responses_api_provider_config=openai_config,
+            custom_llm_provider="openai",
+            litellm_params=GenericLiteLLMParams(api_base=azure_api_base),
+            kwargs={},
+            model="gpt-5.5",
+            use_chat_completions_api=False,
+        )
+
+        assert isinstance(resolved, litellm.AzureOpenAIResponsesAPIConfig)
+
+    def test_openai_gpt55_azure_api_base_drops_empty_reasoning(self):
+        azure_api_base = (
+            "https://example.services.ai.azure.com/api/projects/foo/openai/v1"
+        )
+        config = _resolve_native_azure_responses_api_config(
+            responses_api_provider_config=litellm.OpenAIResponsesAPIConfig(),
+            custom_llm_provider="openai",
+            litellm_params=GenericLiteLLMParams(api_base=azure_api_base),
+            kwargs={},
+            model="openai/gpt-5.5",
+            use_chat_completions_api=False,
+        )
+        assert isinstance(config, litellm.AzureOpenAIResponsesAPIConfig)
+
+        request = config.transform_responses_api_request(
+            model="openai/gpt-5.5",
+            input=[
+                {"type": "message", "role": "user", "content": "test thinking"},
+                {"type": "reasoning", "summary": []},
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "shell",
+                    "arguments": '{"command":"echo ok"}',
+                },
+            ],
+            response_api_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(api_base=azure_api_base),
+            headers={},
+        )
+
+        assert [item.get("type") for item in request["input"]] == [
+            "message",
+            "function_call",
+        ]
 
     def test_azure_custom_tool_does_not_force_chat_bridge(self):
         tools = [

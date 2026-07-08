@@ -524,3 +524,118 @@ class TestAzureResponsesAPIConfig:
         """
         supported = self.config.get_supported_openai_params(self.model)
         assert "context_management" not in supported
+
+    def test_azure_reasoning_tool_history_input_is_normalized(self):
+        config = AzureOpenAIResponsesAPIConfig()
+        input_items = [
+            {"type": "message", "role": "user", "content": "test thinking"},
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "think step 1"}],
+                "encrypted_content": None,
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "shell",
+                "arguments": '{"command":"echo ok"}',
+                "status": "completed",
+                "role": "assistant",
+                "content": "",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "ok\n",
+                "status": "completed",
+            },
+        ]
+
+        validated = config._validate_input_param(input_items)
+
+        reasoning_item = validated[1]
+        function_call_item = validated[2]
+        function_call_output_item = validated[3]
+
+        assert reasoning_item["type"] == "reasoning"
+        assert reasoning_item["summary"] == [
+            {"type": "summary_text", "text": "think step 1"}
+        ]
+        assert "role" not in reasoning_item
+        assert "status" not in reasoning_item
+        assert "content" not in reasoning_item
+        assert "encrypted_content" not in reasoning_item
+
+        assert function_call_item["call_id"] == "call_1"
+        assert "role" not in function_call_item
+        assert "content" not in function_call_item
+        assert "status" not in function_call_item
+
+        assert function_call_output_item["call_id"] == "call_1"
+        assert "status" not in function_call_output_item
+
+    def test_azure_empty_reasoning_history_item_is_dropped(self):
+        config = AzureOpenAIResponsesAPIConfig()
+        input_items = [
+            {"type": "message", "role": "user", "content": "test thinking"},
+            {"type": "reasoning", "summary": []},
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "shell",
+                "arguments": '{"command":"echo ok"}',
+                "status": "completed",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "ok\n",
+                "status": "completed",
+            },
+        ]
+
+        validated = config._validate_input_param(input_items)
+
+        assert [item.get("type") for item in validated] == [
+            "message",
+            "function_call",
+            "function_call_output",
+        ]
+
+        function_call_item = validated[1]
+        function_call_output_item = validated[2]
+
+        assert function_call_item["call_id"] == "call_1"
+        assert "role" not in function_call_item
+        assert "content" not in function_call_item
+        assert "status" not in function_call_item
+
+        assert function_call_output_item["call_id"] == "call_1"
+        assert "status" not in function_call_output_item
+
+    def test_azure_reasoning_with_id_but_empty_summary_is_kept(self):
+        config = AzureOpenAIResponsesAPIConfig()
+        input_items = [
+            {"type": "message", "role": "user", "content": "test thinking"},
+            {"type": "reasoning", "id": "rs_1", "summary": []},
+        ]
+
+        validated = config._validate_input_param(input_items)
+
+        assert len(validated) == 2
+        assert validated[1]["type"] == "reasoning"
+        assert validated[1]["id"] == "rs_1"
+
+    def test_azure_project_v1_api_base_uses_openai_style_responses_url(self):
+        config = AzureOpenAIResponsesAPIConfig()
+        api_base = (
+            "https://example.services.ai.azure.com/api/projects/agentlab/openai/v1"
+        )
+
+        url = config.get_complete_url(api_base=api_base, litellm_params={})
+
+        assert url == f"{api_base}/responses"
+        assert "api-version" not in url

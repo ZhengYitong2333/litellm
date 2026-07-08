@@ -2,7 +2,6 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, Union
 
 import httpx
-from openai.types.responses import ResponseReasoningItem
 
 from litellm._logging import verbose_logger
 from litellm.litellm_core_utils.url_utils import encode_url_path_segment
@@ -55,71 +54,140 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
             model = model.replace("o_series/", "")
         return model
 
+    @staticmethod
+    def _is_empty_azure_native_reasoning_placeholder(item: Dict[str, Any]) -> bool:
+        if item.get("type") != "reasoning":
+            return False
+        if item.get("id"):
+            return False
+
+        content = item.get("content")
+        if isinstance(content, str) and content:
+            return False
+        if isinstance(content, list) and any(
+            isinstance(block, dict) and block.get("text") for block in content
+        ):
+            return False
+
+        encrypted_content = item.get("encrypted_content")
+        if encrypted_content is not None and encrypted_content != "":
+            return False
+
+        summary = item.get("summary")
+        if summary is None:
+            return True
+        if isinstance(summary, str):
+            return summary == ""
+        if isinstance(summary, list):
+            return not any(
+                isinstance(block, dict) and block.get("text") for block in summary
+            )
+        return True
+
     def _handle_reasoning_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Handle reasoning items to filter out the status field.
-        Issue: https://github.com/BerriAI/litellm/issues/13484
-
-        Azure OpenAI API does not accept 'status' field in reasoning input items.
-        """
         if item.get("type") == "reasoning":
-            try:
-                # Ensure required fields are present for ResponseReasoningItem
-                item_data = dict(item)
-                if "summary" not in item_data:
-                    item_data["summary"] = (
-                        item_data.get("reasoning_content", "")[:100] + "..."
-                        if len(item_data.get("reasoning_content", "")) > 100
-                        else item_data.get("reasoning_content", "")
-                    )
-
-                # Create ResponseReasoningItem object from the item data
-                reasoning_item = ResponseReasoningItem(**item_data)
-
-                # Convert back to dict with exclude_none=True to exclude None fields
-                dict_reasoning_item = reasoning_item.model_dump(exclude_none=True)
-                dict_reasoning_item.pop("status", None)
-
-                return dict_reasoning_item
-            except Exception as e:
-                verbose_logger.debug(
-                    f"Failed to create ResponseReasoningItem, falling back to manual filtering: {e}"
-                )
-                # Fallback: manually filter out known None fields
-                filtered_item = {
-                    k: v
-                    for k, v in item.items()
-                    if v is not None
-                    or k not in {"status", "content", "encrypted_content"}
-                }
-                return filtered_item
+            return self._sanitize_azure_reasoning_item(item)
         return item
+
+    @staticmethod
+    def _sanitize_azure_reasoning_item(item: Dict[str, Any]) -> Dict[str, Any]:
+        sanitized: Dict[str, Any] = {"type": "reasoning"}
+
+        item_id = item.get("id")
+        if isinstance(item_id, str) and item_id:
+            sanitized["id"] = item_id
+
+        encrypted_content = item.get("encrypted_content")
+        if encrypted_content is not None:
+            sanitized["encrypted_content"] = encrypted_content
+
+        summary = item.get("summary")
+        if isinstance(summary, list):
+            summary_blocks: List[Dict[str, str]] = []
+            for block in summary:
+                if not isinstance(block, dict):
+                    continue
+                text = block.get("text")
+                if not isinstance(text, str) or not text:
+                    continue
+                block_type = block.get("type") or "summary_text"
+                summary_blocks.append({"type": str(block_type), "text": text})
+            sanitized["summary"] = summary_blocks
+        else:
+            texts: List[str] = []
+            if isinstance(summary, str) and summary:
+                texts.append(summary)
+            content = item.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        text = block.get("text")
+                        if isinstance(text, str) and text:
+                            texts.append(text)
+            reasoning_content = item.get("reasoning_content")
+            if isinstance(reasoning_content, str) and reasoning_content:
+                texts.append(reasoning_content)
+            sanitized["summary"] = (
+                [{"type": "summary_text", "text": "\n".join(texts)}] if texts else []
+            )
+
+        return sanitized
+
+    @staticmethod
+    def _sanitize_azure_function_call_item(item: Dict[str, Any]) -> Dict[str, Any]:
+        sanitized = {k: v for k, v in item.items() if v is not None}
+        sanitized.pop("role", None)
+        sanitized.pop("content", None)
+        sanitized.pop("status", None)
+        return sanitized
+
+    @staticmethod
+    def _sanitize_azure_function_call_output_item(
+        item: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        sanitized = {k: v for k, v in item.items() if v is not None}
+        sanitized.pop("status", None)
+        return sanitized
+
+    @staticmethod
+    def _sanitize_azure_message_item(item: Dict[str, Any]) -> Dict[str, Any]:
+        sanitized = {k: v for k, v in item.items() if v is not None}
+        sanitized.pop("status", None)
+        return sanitized
 
     def _validate_input_param(
         self, input: Union[str, ResponseInputParam]
     ) -> Union[str, ResponseInputParam]:
-        """
-        Override parent method to also filter out 'status' field from message items.
-        Azure OpenAI API does not accept 'status' field in input messages.
-        """
         from typing import cast
 
-        # First call parent's validation
         validated_input = super()._validate_input_param(input)
 
-        # Then filter out status from message items
-        if isinstance(validated_input, list):
-            filtered_input: List[Any] = []
-            for item in validated_input:
-                if isinstance(item, dict) and item.get("type") == "message":
-                    # Filter out status field from message items
-                    filtered_item = {k: v for k, v in item.items() if k != "status"}
-                    filtered_input.append(filtered_item)
-                else:
-                    filtered_input.append(item)
-            return cast(ResponseInputParam, filtered_input)
+        if not isinstance(validated_input, list):
+            return validated_input
 
-        return validated_input
+        filtered_input: List[Any] = []
+        for item in validated_input:
+            if not isinstance(item, dict):
+                filtered_input.append(item)
+                continue
+
+            item_type = item.get("type")
+            if item_type == "reasoning":
+                if self._is_empty_azure_native_reasoning_placeholder(item):
+                    continue
+                filtered_input.append(self._sanitize_azure_reasoning_item(item))
+            elif item_type == "function_call":
+                filtered_input.append(self._sanitize_azure_function_call_item(item))
+            elif item_type == "function_call_output":
+                filtered_input.append(
+                    self._sanitize_azure_function_call_output_item(item)
+                )
+            elif item_type == "message":
+                filtered_input.append(self._sanitize_azure_message_item(item))
+            else:
+                filtered_input.append(item)
+
+        return cast(ResponseInputParam, filtered_input)
 
     def transform_responses_api_request(
         self,
@@ -177,6 +245,21 @@ class AzureOpenAIResponsesAPIConfig(OpenAIResponsesAPIConfig):
         "https://litellm8397336933.openai.azure.com/openai/responses?api-version=2024-05-01-preview"
         """
         from litellm.constants import AZURE_DEFAULT_RESPONSES_API_VERSION
+        from litellm.secret_managers.main import get_secret_str
+
+        import litellm
+
+        resolved_api_base = (
+            api_base or litellm.api_base or get_secret_str("AZURE_API_BASE")
+        )
+        if resolved_api_base is None:
+            raise ValueError(
+                "api_base is required for Azure AI Studio. Please set the api_base parameter."
+            )
+
+        normalized_api_base = resolved_api_base.rstrip("/")
+        if "/openai/v1" in normalized_api_base:
+            return f"{normalized_api_base}/responses"
 
         return BaseAzureLLM._get_base_azure_url(
             api_base=api_base,

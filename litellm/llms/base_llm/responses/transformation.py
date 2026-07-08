@@ -62,6 +62,20 @@ class BaseResponsesAPIConfig(ABC):
         """
         return False
 
+    AZURE_NATIVE_RESPONSES_API_HOSTS = (
+        "ai.azure.com",
+        "openai.azure.com",
+        "services.ai.azure.com",
+    )
+
+    @staticmethod
+    def is_azure_native_responses_api_base(api_base: Optional[str]) -> bool:
+        normalized = str(api_base or "").lower()
+        return any(
+            host in normalized
+            for host in BaseResponsesAPIConfig.AZURE_NATIVE_RESPONSES_API_HOSTS
+        )
+
     @abstractmethod
     def get_supported_openai_params(self, model: str) -> list:
         pass

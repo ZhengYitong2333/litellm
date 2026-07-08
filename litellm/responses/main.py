@@ -709,6 +709,37 @@ def _should_force_responses_to_chat_bridge(
     return False
 
 
+def _resolve_native_azure_responses_api_config(
+    *,
+    responses_api_provider_config: Optional[BaseResponsesAPIConfig],
+    custom_llm_provider: Optional[str],
+    litellm_params: GenericLiteLLMParams,
+    kwargs: Dict[str, Any],
+    model: str,
+    use_chat_completions_api: bool,
+) -> Optional[BaseResponsesAPIConfig]:
+    if use_chat_completions_api or responses_api_provider_config is None:
+        return responses_api_provider_config
+
+    provider_name = (
+        custom_llm_provider.value
+        if isinstance(custom_llm_provider, litellm.LlmProviders)
+        else str(custom_llm_provider or "")
+    )
+    if provider_name != litellm.LlmProviders.OPENAI.value:
+        return responses_api_provider_config
+
+    api_base = str(litellm_params.api_base or kwargs.get("api_base") or "")
+    if not BaseResponsesAPIConfig.is_azure_native_responses_api_base(api_base):
+        return responses_api_provider_config
+
+    azure_config = ProviderConfigManager.get_provider_responses_api_config(
+        provider=litellm.LlmProviders.AZURE,
+        model=model,
+    )
+    return azure_config or responses_api_provider_config
+
+
 def _resolve_model_provider_for_responses(
     model: str,
     custom_llm_provider: Optional[str],
@@ -1097,6 +1128,14 @@ def responses(
                     model=model,
                     provider=custom_llm_provider,
                 )
+            )
+            responses_api_provider_config = _resolve_native_azure_responses_api_config(
+                responses_api_provider_config=responses_api_provider_config,
+                custom_llm_provider=custom_llm_provider,
+                litellm_params=litellm_params,
+                kwargs=kwargs,
+                model=model,
+                use_chat_completions_api=use_chat_completions_api,
             )
 
         local_vars.update(kwargs)
