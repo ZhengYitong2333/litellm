@@ -1201,6 +1201,7 @@ def completion(  # type: ignore # noqa: PLR0915
     args = locals()
 
     skip_mcp_handler = kwargs.pop("_skip_mcp_handler", False)
+    skip_responses_api_bridge = kwargs.pop("_skip_responses_api_bridge", False)
     if not skip_mcp_handler and tools:
         from litellm.responses.mcp.chat_completions_handler import acompletion_with_mcp
         from litellm.responses.mcp.litellm_proxy_mcp_handler import (
@@ -1415,11 +1416,14 @@ def completion(  # type: ignore # noqa: PLR0915
         )
 
         ## RESPONSES API BRIDGE LOGIC ## - check early and normalize model name
-        responses_api_model_info, model = responses_api_bridge_check(
-            model=model,
-            custom_llm_provider=custom_llm_provider,
-            web_search_options=web_search_options,
-        )
+        if skip_responses_api_bridge:
+            responses_api_model_info = {}
+        else:
+            responses_api_model_info, model = responses_api_bridge_check(
+                model=model,
+                custom_llm_provider=custom_llm_provider,
+                web_search_options=web_search_options,
+            )
 
         if not _should_allow_input_examples(
             custom_llm_provider=custom_llm_provider, model=model
@@ -1670,7 +1674,10 @@ def completion(  # type: ignore # noqa: PLR0915
         # reasoningSummary/reasoning_summary without tools (AI SDK) that the first
         # (early) check doesn't cover.
         _reasoning_summary_for_bridge = peek_reasoning_summary_aliases(optional_params)
-        if responses_api_model_info.get("mode") != "responses":
+        if (
+            not skip_responses_api_bridge
+            and responses_api_model_info.get("mode") != "responses"
+        ):
             responses_api_model_info, model = responses_api_bridge_check(
                 model=model,
                 custom_llm_provider=custom_llm_provider,

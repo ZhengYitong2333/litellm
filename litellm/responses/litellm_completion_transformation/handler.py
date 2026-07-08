@@ -125,6 +125,7 @@ class LiteLLMCompletionTransformationHandler:
         completion_args.pop("client_metadata", None)
         completion_args.pop("output_config", None)
         completion_args.pop("acompletion", None)
+        completion_args["_skip_responses_api_bridge"] = True
         self._normalize_top_level_system_arg(completion_args)
         self._drop_azure_reasoning_effort_when_tools_present(completion_args)
 
@@ -185,6 +186,7 @@ class LiteLLMCompletionTransformationHandler:
         # Router/aresponses may pass routing flags; must not reach litellm.acompletion().
         for _routing_key in ("acompletion", "aresponses", "responses"):
             acompletion_args.pop(_routing_key, None)
+        acompletion_args["_skip_responses_api_bridge"] = True
         self._normalize_top_level_system_arg(acompletion_args)
         self._drop_azure_reasoning_effort_when_tools_present(acompletion_args)
 

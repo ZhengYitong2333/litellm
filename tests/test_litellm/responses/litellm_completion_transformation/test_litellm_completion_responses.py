@@ -2802,6 +2802,108 @@ class TestEnsureOutputItemContentPartAdded:
 
         assert result.type == ResponsesAPIStreamEvents.RESPONSE_COMPLETED
 
+    def test_bridge_iterator_advances_fresh_async_stream_wrapper(self):
+        import asyncio
+        import time
+
+        from litellm.litellm_core_utils.litellm_logging import Logging
+        from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
+        from litellm.responses.litellm_completion_transformation.streaming_iterator import (
+            LiteLLMCompletionStreamingIterator,
+        )
+        from litellm.types.llms.openai import ResponsesAPIStreamEvents
+        from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
+
+        stream_chunks = [
+            ModelResponseStream(
+                id="chatcmpl-role",
+                created=1742056047,
+                model="gpt-5.5",
+                object="chat.completion.chunk",
+                choices=[
+                    StreamingChoices(
+                        finish_reason=None,
+                        index=0,
+                        delta=Delta(content="", role="assistant"),
+                    )
+                ],
+            ),
+            ModelResponseStream(
+                id="chatcmpl-role",
+                created=1742056047,
+                model="gpt-5.5",
+                object="chat.completion.chunk",
+                choices=[
+                    StreamingChoices(
+                        finish_reason=None,
+                        index=0,
+                        delta=Delta(content="Hi"),
+                    )
+                ],
+            ),
+            ModelResponseStream(
+                id="chatcmpl-role",
+                created=1742056048,
+                model="gpt-5.5",
+                object="chat.completion.chunk",
+                choices=[
+                    StreamingChoices(
+                        finish_reason="stop",
+                        index=0,
+                        delta=Delta(content=""),
+                    )
+                ],
+            ),
+        ]
+
+        class FreshIteratorStream:
+            def __aiter__(self):
+                return _FreshIter(list(stream_chunks))
+
+        class _FreshIter:
+            def __init__(self, chunks):
+                self._chunks = chunks
+                self._index = 0
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self._index >= len(self._chunks):
+                    raise StopAsyncIteration
+                chunk = self._chunks[self._index]
+                self._index += 1
+                return chunk
+
+        wrapper = CustomStreamWrapper(
+            completion_stream=FreshIteratorStream(),
+            model="gpt-5.5",
+            logging_obj=Logging(
+                model="gpt-5.5",
+                messages=[{"role": "user", "content": "hi"}],
+                stream=True,
+                call_type="completion",
+                start_time=time.time(),
+                litellm_call_id="bridge-test",
+                function_id="bridge-test",
+            ),
+            custom_llm_provider="bedrock",
+        )
+        iterator = LiteLLMCompletionStreamingIterator(
+            model="gpt-5.5",
+            litellm_custom_stream_wrapper=wrapper,
+            request_input="hi",
+            responses_api_request={},
+        )
+
+        async def drain_until_completed():
+            while True:
+                event = await asyncio.wait_for(iterator.__anext__(), timeout=2)
+                if event.type == ResponsesAPIStreamEvents.RESPONSE_COMPLETED:
+                    return event
+
+        asyncio.run(drain_until_completed())
+
     def test_emit_response_completed_uses_stream_finish_reason(self):
         """
         When the assembled model response carries finish_reason="content_filter"
