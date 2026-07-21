@@ -911,6 +911,18 @@ def test_gpt5_4_pro_rejects_non_default_temperature(config: OpenAIConfig):
         )
 
 
+def test_gpt5_supports_none_drops_non_default_temperature_when_drop_params_true(
+    gpt5_config: OpenAIGPT5Config,
+):
+    params = gpt5_config.map_openai_params(
+        non_default_params={"temperature": 0.2},
+        optional_params={},
+        model="gpt-5.5",
+        drop_params=True,
+    )
+    assert "temperature" not in params
+
+
 def test_gpt5_1_temperature_without_reasoning_effort(config: OpenAIConfig):
     """Test that GPT-5.1 supports any temperature when reasoning_effort is not specified.
 

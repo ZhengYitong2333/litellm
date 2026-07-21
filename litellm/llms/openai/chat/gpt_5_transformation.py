@@ -297,13 +297,15 @@ class OpenAIGPT5Config(OpenAIGPTConfig):
         if "temperature" in non_default_params:
             temperature_value: Optional[float] = non_default_params.pop("temperature")
             if temperature_value is not None:
-                # models supporting reasoning_effort="none" also support flexible temperature
-                if supports_none and (
+                if temperature_value == 1:
+                    optional_params["temperature"] = temperature_value
+                elif supports_none and (
                     effective_effort == "none" or effective_effort is None
                 ):
-                    optional_params["temperature"] = temperature_value
-                elif temperature_value == 1:
-                    optional_params["temperature"] = temperature_value
+                    if litellm.drop_params or drop_params:
+                        pass
+                    else:
+                        optional_params["temperature"] = temperature_value
                 elif litellm.drop_params or drop_params:
                     pass
                 else:
