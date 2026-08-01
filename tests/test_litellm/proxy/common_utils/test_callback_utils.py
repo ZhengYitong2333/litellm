@@ -171,6 +171,43 @@ def test_initialize_callbacks_on_proxy_instantiates_compression_interception(
         litellm.callbacks = original_callbacks
 
 
+def test_initialize_callbacks_on_proxy_instantiates_vision_interception(
+    monkeypatch,
+):
+    dummy_callback = object()
+    monkeypatch.setitem(
+        sys.modules,
+        "litellm.proxy.proxy_server",
+        SimpleNamespace(prisma_client=None),
+    )
+    monkeypatch.setattr(
+        "litellm.integrations.vision_interception.handler.VisionInterceptionLogger.initialize_from_proxy_config",
+        lambda litellm_settings, callback_specific_params: dummy_callback,
+    )
+
+    original_callbacks = (
+        list(litellm.callbacks) if isinstance(litellm.callbacks, list) else []
+    )
+    litellm.callbacks = []
+    try:
+        initialize_callbacks_on_proxy(
+            value=["vision_interception"],
+            premium_user=False,
+            config_file_path=".",
+            litellm_settings={
+                "vision_interception_params": {
+                    "vision_model": "vision-model",
+                    "target_models": ["text-only"],
+                }
+            },
+            callback_specific_params={},
+        )
+        assert dummy_callback in litellm.callbacks
+        assert "vision_interception" not in litellm.callbacks
+    finally:
+        litellm.callbacks = original_callbacks
+
+
 # ---------------------------------------------------------------------------
 # encrypt_callback_vars / decrypt_callback_vars
 # ---------------------------------------------------------------------------

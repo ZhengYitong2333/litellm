@@ -67,6 +67,19 @@ def initialize_callbacks_on_proxy(  # noqa: PLR0915
                 )
                 imported_list.append(compression_interception_obj)
                 continue
+            if isinstance(callback, str) and callback == "vision_interception":
+                from litellm.integrations.vision_interception.handler import (
+                    VisionInterceptionLogger,
+                )
+
+                vision_interception_obj = (
+                    VisionInterceptionLogger.initialize_from_proxy_config(
+                        litellm_settings=litellm_settings,
+                        callback_specific_params=callback_specific_params,
+                    )
+                )
+                imported_list.append(vision_interception_obj)
+                continue
 
             # check if callback is a custom logger compatible callback
             if isinstance(callback, str):
