@@ -46,8 +46,8 @@ Tier = Literal["quick", "full", "matrix", "stress"]
 Expect = Literal["ok", "fail", "skip"]
 
 CHAT_MODELS = [
-    "sophnet-glm-5.1",
     "sophnet-glm-5.2",
+    "sophnet-kimi-k3",
     "sophnet-gpt-5.5",
     "sophnet-deepseekv4-pro",
     "sophnet-deepseekv4-flash",
@@ -61,7 +61,7 @@ CHAT_MODELS = [
 
 CLAUDE = "sophnet-claude-opus-4-7"
 GLM = "sophnet-glm-5.2"
-GLM51 = "sophnet-glm-5.1"
+KIMI = "sophnet-kimi-k3"
 GPT55 = "sophnet-gpt-5.5"
 AZURE = "azure-gpt-5.4"
 AZURE55 = "azure-gpt-5.5"
@@ -276,13 +276,17 @@ def case_chat_basic(model: str) -> dict:
     payload: dict = {
         "model": model,
         "messages": [{"role": "user", "content": "Reply with exactly one word: OK"}],
-        "max_tokens": 32,
+        "max_tokens": 256 if model == KIMI else 32,
     }
     if not model.startswith("sophnet-gpt") and not model.startswith("azure-gpt"):
-        if model != CLAUDE:
+        if model not in {CLAUDE, KIMI}:
             payload["temperature"] = 0
     r = post("/v1/chat/completions", payload, retries=1)
     if r.get("ok"):
+        if model == KIMI and r["body"].get("model") != KIMI:
+            r["ok"] = False
+            r["error"] = f"Kimi request fell back to {r['body'].get('model')}"
+            return r
         r["preview"] = _chat_text(r["body"])
     elif skip := _maybe_skip_upstream(r):
         return skip
