@@ -95,7 +95,58 @@ async def test_deployment_hook_replaces_images_for_target_model_in_order():
     assert len(calls) == 2
     assert all(call["model"] == "vision-model" for call in calls)
     assert all(call["_vision_interception_internal"] is True for call in calls)
+    assert all(call["timeout"] == 30 for call in calls)
+    assert all(call["num_retries"] == 0 for call in calls)
+    assert all(call["disable_fallbacks"] is True for call in calls)
     assert kwargs["messages"][0]["content"][1]["type"] == "image_url"
+
+
+@pytest.mark.asyncio
+async def test_deployment_hook_uses_litellm_metadata_model_group():
+    async def completion_fn(**kwargs):
+        return _response("OCR-42")
+
+    logger = VisionInterceptionLogger(
+        vision_model="vision-model",
+        target_models=["text-only"],
+        completion_fn=completion_fn,
+    )
+    kwargs = {
+        "model": "custom_openai/Text-Only",
+        "litellm_metadata": {"model_group": "text-only"},
+        "messages": [
+            {"role": "user", "content": [_image("https://example.com/a.png")]}
+        ],
+    }
+
+    result = await logger.async_pre_call_deployment_hook(kwargs, None)
+
+    assert result is not None
+    assert result["messages"][0]["content"][0]["text"].endswith("OCR-42")
+
+
+@pytest.mark.asyncio
+async def test_deployment_hook_uses_nested_litellm_metadata_model_group():
+    async def completion_fn(**kwargs):
+        return _response("OCR-42")
+
+    logger = VisionInterceptionLogger(
+        vision_model="vision-model",
+        target_models=["text-only"],
+        completion_fn=completion_fn,
+    )
+    kwargs = {
+        "model": "custom_openai/Text-Only",
+        "litellm_params": {"litellm_metadata": {"model_group": "text-only"}},
+        "messages": [
+            {"role": "user", "content": [_image("https://example.com/a.png")]}
+        ],
+    }
+
+    result = await logger.async_pre_call_deployment_hook(kwargs, None)
+
+    assert result is not None
+    assert result["messages"][0]["content"][0]["text"].endswith("OCR-42")
 
 
 @pytest.mark.asyncio
@@ -117,6 +168,8 @@ async def test_deployment_hook_raises_when_vision_call_fails():
 
     with pytest.raises(VisionInterceptionError, match="vision-model"):
         await logger.async_pre_call_deployment_hook(kwargs, None)
+
+    assert VisionInterceptionError.status_code == 422
 
 
 @pytest.mark.asyncio

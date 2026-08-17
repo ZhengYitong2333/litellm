@@ -19,7 +19,7 @@ _NO_IMAGE_RESPONSES = {"[[no_image]]", "no image provided", "no image was provid
 
 
 class VisionInterceptionError(RuntimeError):
-    pass
+    status_code = 422
 
 
 class VisionInterceptionLogger(CustomLogger):
@@ -66,11 +66,11 @@ class VisionInterceptionLogger(CustomLogger):
         if kwargs.pop(_INTERNAL_REQUEST_KEY, False):
             return kwargs
 
-        if self._model_group(kwargs) not in self.target_models:
-            return None
-
         messages = kwargs.get("messages")
         if not isinstance(messages, list) or not self._contains_image(messages):
+            return None
+
+        if self._model_group(kwargs) not in self.target_models:
             return None
 
         transformed_messages = await self._replace_images(messages)
@@ -85,19 +85,21 @@ class VisionInterceptionLogger(CustomLogger):
 
     @staticmethod
     def _model_group(kwargs: Dict[str, Any]) -> str:
-        metadata = kwargs.get("metadata")
-        if isinstance(metadata, Mapping):
-            model_group = metadata.get("model_group")
-            if isinstance(model_group, str):
-                return model_group
+        for metadata_key in ("metadata", "litellm_metadata"):
+            metadata = kwargs.get(metadata_key)
+            if isinstance(metadata, Mapping):
+                model_group = metadata.get("model_group")
+                if isinstance(model_group, str):
+                    return model_group
 
         litellm_params = kwargs.get("litellm_params")
         if isinstance(litellm_params, Mapping):
-            nested_metadata = litellm_params.get("metadata")
-            if isinstance(nested_metadata, Mapping):
-                model_group = nested_metadata.get("model_group")
-                if isinstance(model_group, str):
-                    return model_group
+            for metadata_key in ("metadata", "litellm_metadata"):
+                nested_metadata = litellm_params.get(metadata_key)
+                if isinstance(nested_metadata, Mapping):
+                    model_group = nested_metadata.get("model_group")
+                    if isinstance(model_group, str):
+                        return model_group
 
         model = kwargs.get("model")
         return model if isinstance(model, str) else ""
@@ -159,6 +161,9 @@ class VisionInterceptionLogger(CustomLogger):
                     ],
                     max_tokens=512,
                     temperature=0,
+                    timeout=30,
+                    num_retries=0,
+                    disable_fallbacks=True,
                     **{_INTERNAL_REQUEST_KEY: True},
                 )
                 content = self._response_content(response)
