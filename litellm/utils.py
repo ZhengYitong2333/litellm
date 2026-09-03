@@ -9346,6 +9346,12 @@ class ProviderConfigManager:
             )
 
             return get_dashscope_image_generation_config(model)
+        elif LlmProviders.SOPHNET == provider:
+            from litellm.llms.sophnet.image_generation import (
+                get_sophnet_image_generation_config,
+            )
+
+            return get_sophnet_image_generation_config(model)
         return None
 
     @staticmethod
@@ -9373,6 +9379,10 @@ class ProviderConfigManager:
             from litellm.llms.runwayml.videos.transformation import RunwayMLVideoConfig
 
             return RunwayMLVideoConfig()
+        elif LlmProviders.SOPHNET == provider:
+            from litellm.llms.sophnet.videos import get_sophnet_video_config
+
+            return get_sophnet_video_config()
         return None
 
     @staticmethod

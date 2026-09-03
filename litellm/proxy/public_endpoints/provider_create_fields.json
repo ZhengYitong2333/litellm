@@ -2571,6 +2571,34 @@
     "default_model_placeholder": "snowflake/mistral-7b"
   },
   {
+    "provider": "Sophnet",
+    "provider_display_name": "Sophnet",
+    "litellm_provider": "sophnet",
+    "credential_fields": [
+      {
+        "key": "api_key",
+        "label": "Sophnet API Key",
+        "placeholder": null,
+        "tooltip": null,
+        "required": true,
+        "field_type": "password",
+        "options": null,
+        "default_value": null
+      },
+      {
+        "key": "api_base",
+        "label": "API Base",
+        "placeholder": "https://www.sophnet.com/api/open-apis/projects/easyllms",
+        "tooltip": "Sophnet project base used for image and video generation. Defaults to the easyllms project if omitted.",
+        "required": false,
+        "field_type": "text",
+        "options": null,
+        "default_value": "https://www.sophnet.com/api/open-apis/projects/easyllms"
+      }
+    ],
+    "default_model_placeholder": "sophnet/Nano-Banana-Pro"
+  },
+  {
     "provider": "Soniox",
     "provider_display_name": "Soniox",
     "litellm_provider": "soniox",

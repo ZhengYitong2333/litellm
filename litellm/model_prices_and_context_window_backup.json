@@ -30895,6 +30895,50 @@
         "max_tokens": 8192,
         "mode": "chat"
     },
+    "sophnet/Doubao-Seedream-5.0-Pro": {
+        "litellm_provider": "sophnet",
+        "mode": "image_generation",
+        "source": "https://www.sophnet.com/docs",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "sophnet/Hailuo-2.3-T2V": {
+        "litellm_provider": "sophnet",
+        "mode": "video_generation",
+        "source": "https://www.sophnet.com/docs",
+        "supported_endpoints": [
+            "/v1/videos"
+        ],
+        "supported_modalities": [
+            "text"
+        ],
+        "supported_output_modalities": [
+            "video"
+        ]
+    },
+    "sophnet/Nano-Banana-Pro": {
+        "litellm_provider": "sophnet",
+        "mode": "image_generation",
+        "source": "https://www.sophnet.com/docs",
+        "supported_endpoints": [
+            "/v1/images/generations"
+        ]
+    },
+    "sophnet/Wan3.0-Video-Prime": {
+        "litellm_provider": "sophnet",
+        "mode": "video_generation",
+        "source": "https://www.sophnet.com/docs",
+        "supported_endpoints": [
+            "/v1/videos"
+        ],
+        "supported_modalities": [
+            "text"
+        ],
+        "supported_output_modalities": [
+            "video"
+        ]
+    },
     "stability/sd3": {
         "litellm_provider": "stability",
         "mode": "image_generation",
