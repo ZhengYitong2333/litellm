@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -235,6 +236,83 @@ async def test_deployment_hook_uses_fallback_when_primary_receives_no_image():
     assert result["messages"][0]["content"][0]["text"].endswith("OCR-42")
 
 
+@pytest.mark.asyncio
+async def test_deployment_hook_replaces_responses_input_image():
+    calls = []
+
+    async def completion_fn(**kwargs):
+        calls.append(kwargs)
+        return _response("OCR-42")
+
+    logger = VisionInterceptionLogger(
+        vision_model="vision-model",
+        target_models=["deepseek-v4-pro"],
+        completion_fn=completion_fn,
+    )
+    kwargs = {
+        "model": "deepseek/deepseek-v4-pro",
+        "metadata": {"model_group": "deepseek-v4-pro"},
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "what is this"},
+                    {"type": "input_image", "image_url": "https://example.com/a.png"},
+                ],
+            }
+        ],
+    }
+
+    result = await logger.async_pre_call_deployment_hook(kwargs, None)
+
+    assert result is not None
+    assert result["input"][0]["content"] == [
+        {"type": "input_text", "text": "what is this"},
+        {
+            "type": "input_text",
+            "text": "[Image transcription by vision-model]\nOCR-42",
+        },
+    ]
+    assert kwargs["input"][0]["content"][1]["type"] == "input_image"
+    assert calls[0]["messages"][0]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "https://example.com/a.png"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_deployment_hook_replaces_top_level_responses_input_image():
+    async def completion_fn(**kwargs):
+        return _response("OCR-42")
+
+    logger = VisionInterceptionLogger(
+        vision_model="vision-model",
+        target_models=["deepseek-v4-pro"],
+        completion_fn=completion_fn,
+    )
+    kwargs = {
+        "model": "deepseek-v4-pro",
+        "input": [
+            {"type": "input_text", "text": "describe"},
+            {
+                "type": "input_image",
+                "image_url": {"url": "https://example.com/b.png", "detail": "high"},
+            },
+        ],
+    }
+
+    result = await logger.async_pre_call_deployment_hook(kwargs, None)
+
+    assert result is not None
+    assert result["input"] == [
+        {"type": "input_text", "text": "describe"},
+        {
+            "type": "input_text",
+            "text": "[Image transcription by vision-model]\nOCR-42",
+        },
+    ]
+
+
 def test_initialize_from_proxy_config():
     logger = VisionInterceptionLogger.initialize_from_proxy_config(
         litellm_settings={
@@ -250,3 +328,74 @@ def test_initialize_from_proxy_config():
     assert logger.vision_model == "sophnet-claude-opus-4-7"
     assert logger.fallback_vision_models == ["azure-gpt-5.6-terra"]
     assert logger.target_models == {"deepseek-v4-flash", "sophnet-glm-5.2"}
+
+
+@pytest.mark.asyncio
+async def test_duplicate_images_share_one_transcription_call():
+    calls = []
+
+    async def completion_fn(**kwargs):
+        calls.append(kwargs)
+        await asyncio.sleep(0)
+        return _response("OCR-42")
+
+    logger = VisionInterceptionLogger(
+        vision_model="vision-model",
+        target_models=["text-only"],
+        completion_fn=completion_fn,
+    )
+    kwargs = {
+        "model": "text-only",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    _image("https://example.com/same.png"),
+                    _image("https://example.com/same.png"),
+                ],
+            }
+        ],
+    }
+
+    result = await logger.async_pre_call_deployment_hook(kwargs, None)
+
+    assert result is not None
+    assert len(calls) == 1
+    assert result["messages"][0]["content"] == [
+        {
+            "type": "text",
+            "text": "[Image transcription by vision-model]\nOCR-42",
+        },
+        {
+            "type": "text",
+            "text": "[Image transcription by vision-model]\nOCR-42",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_transcription_cache_skips_repeat_calls_across_turns():
+    calls = []
+
+    async def completion_fn(**kwargs):
+        calls.append(kwargs)
+        return _response("OCR-42")
+
+    logger = VisionInterceptionLogger(
+        vision_model="vision-model",
+        target_models=["text-only"],
+        completion_fn=completion_fn,
+    )
+    kwargs = {
+        "model": "text-only",
+        "messages": [
+            {"role": "user", "content": [_image("https://example.com/cached.png")]}
+        ],
+    }
+
+    first = await logger.async_pre_call_deployment_hook(kwargs, None)
+    second = await logger.async_pre_call_deployment_hook(dict(kwargs), None)
+
+    assert first is not None and second is not None
+    assert len(calls) == 1
+    assert second["messages"][0]["content"][0]["text"].endswith("OCR-42")

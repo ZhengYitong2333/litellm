@@ -1,6 +1,6 @@
 # VS Code 配置 Claude Code（CC）与 Codex 教程
 
-本教程基于当前分支的 **`deploy/sophnet-azure`** 本地 LiteLLM Proxy，在 VS Code 里把 **Claude Code** 和 **OpenAI Codex** 接到 Sophnet / Azure / DeepSeek 模型上。
+本教程基于当前分支的 **`deploy/sophnet-azure`** 本地 LiteLLM Proxy，在 VS Code 里把 **Claude Code** 和 **OpenAI Codex** 接到 Sophnet / DeepSeek 模型上。
 
 - **Docker 部署 Proxy**：见 [§1 Docker 部署](#1-docker-部署-litellm-proxy)
 - **CC / Codex 客户端配置**：见 [§3](#3-claude-codecc配置) / [§4](#4-openai-codex-配置)
@@ -8,9 +8,9 @@
 ```
 VS Code 扩展
     │
-    ├─ Claude Code  ──► POST /v1/messages  ──► LiteLLM :4000 ──► Sophnet / Azure
+    ├─ Claude Code  ──► POST /v1/messages  ──► LiteLLM :4000 ──► Sophnet / DeepSeek
     │
-    └─ Codex        ──► POST /v1/responses ──► LiteLLM :4000 ──► DeepSeek / Azure / Sophnet
+    └─ Codex        ──► POST /v1/responses ──► LiteLLM :4000 ──► DeepSeek / Sophnet
 ```
 
 ---
@@ -47,7 +47,7 @@ CC / Codex 运行在宿主机（VS Code），LiteLLM 跑在 Docker 里，通过 
 │                        └─────────────────────────────┘  │
 └─────────────────────────────────────────────────────────┘
          ▲                           │
-         │  ANTHROPIC_BASE_URL       │  Sophnet / Azure / DeepSeek API
+         │  ANTHROPIC_BASE_URL       │  Sophnet / DeepSeek API
          │  openai_base_url          ▼
    VS Code (CC / Codex)         上游模型服务
 ```
@@ -65,7 +65,7 @@ CC / Codex 运行在宿主机（VS Code），LiteLLM 跑在 Docker 里，通过 
 deploy/sophnet-azure/
 ├── docker-compose.yml    # 编排 db + litellm
 ├── Dockerfile.patch      # 基于官方镜像，设置 PYTHONPATH
-├── config.yaml           # 模型路由（Sophnet / Azure / DeepSeek 别名）
+├── config.yaml           # 模型路由（Sophnet / DeepSeek 别名）
 ├── .env.example          # 环境变量模板
 ├── .env                  # 实际密钥（勿提交 git）
 ├── restart-proxy.sh      # 改 litellm/ 代码后热重启
@@ -236,30 +236,32 @@ Proxy 在 `config.yaml` 中注册的 **`model_name`**（客户端填写的名字
 | 别名 | 上游 | 推荐 | 说明 |
 |------|------|------|------|
 | `sophnet-claude-opus-4-7` | Sophnet Anthropic | ⭐ **Sonnet 默认** | 原生 Anthropic 通道 |
-| `azure-gpt-5.5` | Azure OpenAI | ⭐ **Opus 推荐** | 规划 / 复杂推理 |
+| `sophnet-gpt-5.5` | Sophnet OpenAI 兼容 | ⭐ **Opus 推荐** | 规划 / 复杂推理 |
 | `deepseek-v4-flash` | DeepSeek 官方 | ⭐ **Haiku 推荐** | 快、便宜，thinking |
 | `deepseek-v4-pro` | DeepSeek 官方 | 高质量 | 1M 上下文 |
 | `sophnet-glm-5.2` | Sophnet OpenAI 兼容 | ⭐ **轻量推荐** | 经 LiteLLM 适配器 |
-| `sophnet-glm-5.1` | Sophnet OpenAI 兼容 | 轻量 | 旧版 GLM |
-| `sophnet-gpt-5.5` | Sophnet OpenAI 兼容 | 通用 | 可能 402 |
+| `sophnet-claude-opus-4-8` | Sophnet Anthropic | 备选 | 原生 Anthropic 通道 |
+| `gpt-5.4` | Sophnet OpenAI 兼容 | 备选 | Sophnet GPT-5.4 |
 | `sophnet-deepseekv4-pro` | Sophnet OpenAI 兼容 | 备选 | Sophnet 版 DeepSeek |
 | `sophnet-deepseekv4-flash` | Sophnet OpenAI 兼容 | 备选 | Sophnet 版轻量 |
-| `azure-gpt-5.5` | Azure OpenAI | 稳定 | 同 Opus，GPT 系列 |
-| `azure-gpt-5.4` | Azure OpenAI | 经济 | GPT 系列 |
+| `sophnet-kimi-k3` | Sophnet OpenAI 兼容 | 备选 | 长上下文 |
+| `sophnet-minimax-m3` | Sophnet Anthropic | 备选 | MiniMax |
 
 ### 2.2 Codex（`/v1/responses`）
 
 | 别名 | 上游 | 推荐 | 说明 |
 |------|------|------|------|
-| `deepseek-v4-flash` | DeepSeek 官方 | ⭐ **默认推荐** | 快、便宜，已验证 Codex 通路 |
+| `sophnet-gpt-5.5` | Sophnet | ⭐ **默认推荐** | Select Model 当前默认 |
+| `sophnet-claude-opus-4-8` | Sophnet Anthropic | 主模型 | 原生 Anthropic 通道 |
+| `sophnet-claude-opus-4-7` | Sophnet Anthropic | 主模型 | 原生 Anthropic 通道 |
 | `deepseek-v4-pro` | DeepSeek 官方 | 高质量 | 1M 上下文，thinking 默认开启 |
-| `azure-gpt-5.4` | Azure OpenAI | 稳定 | GPT 系列，无 thinking 干扰 |
-| `azure-gpt-5.5` | Azure OpenAI | 稳定 | 同上 |
-| `sophnet-gpt-5.5` | Sophnet | 备选 | 可能因 KEY_1 欠费随机 402 |
-| `sophnet-glm-5.2` | Sophnet | ⭐ **轻量推荐** | GLM 5.2，经 chat bridge |
-| `sophnet-glm-5.1` | Sophnet | 备选 | 旧版 GLM |
+| `deepseek-v4-flash` | DeepSeek 官方 | 极速 | 快、便宜，已验证 Codex 通路 |
+| `sophnet-glm-5.2` | Sophnet | 轻量 | GLM 5.2，经 chat bridge |
+| `sophnet-kimi-k3` | Sophnet | 长上下文 | Kimi K3 |
+| `gpt-5.4` | Sophnet | 备选 | Sophnet GPT-5.4 |
 | `sophnet-deepseekv4-pro` | Sophnet | 备选 | Sophnet 版 DeepSeek |
 | `sophnet-deepseekv4-flash` | Sophnet | 备选 | Sophnet 版 DeepSeek 轻量 |
+| `sophnet-minimax-m3` | Sophnet Anthropic | 备选 | MiniMax |
 
 查询当前可用列表：
 
@@ -268,7 +270,7 @@ curl -s -H "Authorization: Bearer sk-litellm-sophnet-azure-local" \
   http://localhost:4000/v1/models | python3 -m json.tool
 ```
 
-> **注意**：Sophnet `SOPHNET_API_KEY_1` 欠费时，带 `sophnet-` 前缀的模型可能随机 402；DeepSeek 直连与 Azure 不受影响。
+> **注意**：Sophnet Key 欠费时，带 `sophnet-` 前缀的模型可能随机 402；DeepSeek 直连不受影响。Azure 模型已从代理下线，key 仍保留在 `.env`。
 
 ---
 
@@ -281,7 +283,7 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 | 档位 | LiteLLM 别名 | 配置方式 |
 |------|--------------|----------|
 | Sonnet | `sophnet-claude-opus-4-7` | `ANTHROPIC_DEFAULT_SONNET_MODEL` |
-| Opus | `azure-gpt-5.5` | `ANTHROPIC_DEFAULT_OPUS_MODEL` |
+| Opus | `sophnet-gpt-5.5` | `ANTHROPIC_DEFAULT_OPUS_MODEL` |
 | Haiku | `deepseek-v4-flash` | `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
 | **GLM 5.2** | `sophnet-glm-5.2` | `ANTHROPIC_CUSTOM_MODEL_OPTION`（第 4 项） |
 
@@ -292,7 +294,7 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 | CC 档位 | LiteLLM 别名 | 用途 |
 |---------|--------------|------|
 | Sonnet | `sophnet-claude-opus-4-7` | 日常编码主模型 |
-| Opus | `azure-gpt-5.5` | 规划、复杂任务 |
+| Opus | `sophnet-gpt-5.5` | 规划、复杂任务 |
 | Haiku | `deepseek-v4-flash` | 轻量、快速 |
 | GLM 5.2 | `sophnet-glm-5.2` | 轻量中文 / 低成本 |
 
@@ -310,7 +312,7 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
     { "name": "ANTHROPIC_BASE_URL", "value": "http://localhost:4000" },
     { "name": "ANTHROPIC_AUTH_TOKEN", "value": "sk-litellm-sophnet-azure-local" },
     { "name": "ANTHROPIC_DEFAULT_SONNET_MODEL", "value": "sophnet-claude-opus-4-7" },
-    { "name": "ANTHROPIC_DEFAULT_OPUS_MODEL", "value": "azure-gpt-5.5" },
+    { "name": "ANTHROPIC_DEFAULT_OPUS_MODEL", "value": "sophnet-gpt-5.5" },
     { "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL", "value": "deepseek-v4-flash" },
     { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION", "value": "sophnet-glm-5.2" },
     { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME", "value": "GLM 5.2" },
@@ -329,8 +331,8 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
     "ANTHROPIC_BASE_URL": "http://localhost:4000",
     "ANTHROPIC_AUTH_TOKEN": "sk-litellm-sophnet-azure-local",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "sophnet-claude-opus-4-7",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "azure-gpt-5.5",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION": "规划 · Azure GPT-5.5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "sophnet-gpt-5.5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION": "规划 · Sophnet GPT-5.5",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION": "极速 · DeepSeek V4 Flash（官方）",
     "ANTHROPIC_CUSTOM_MODEL_OPTION": "sophnet-glm-5.2",
@@ -361,7 +363,7 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 会话中输入：
 
 ```
-/model azure-gpt-5.5          # Opus
+/model sophnet-gpt-5.5          # Opus
 /model deepseek-v4-flash      # Haiku
 /model sophnet-glm-5.2        # GLM 5.2（或选单第 4 项）
 /model sophnet-claude-opus-4-7
@@ -415,9 +417,9 @@ CLI / VS Code 里的 **Select Model** 菜单来自 `model_catalog_json`（`~/.co
 `~/.codex/config.toml`：
 
 ```toml
-model = "deepseek-v4-flash"
+model = "sophnet-gpt-5.5"
 model_provider = "litellm"
-model_catalog_json = "/Users/zyt/.codex/models.json"
+model_catalog_json = "/Users/yitong/.codex/models.json"
 
 approval_policy = "on-request"
 sandbox_mode = "workspace-write"
@@ -430,20 +432,21 @@ wire_api = "responses"
 experimental_bearer_token = "sk-litellm-sophnet-azure-local"
 ```
 
-`~/.codex/models.json` 中当前 10 个可选模型（按菜单顺序）：
+`~/.codex/models.json` 中当前可选模型（按菜单顺序）：
 
 | 别名 | 标签 |
 |------|------|
+| `sophnet-gpt-5.5` | **默认** |
+| `sophnet-claude-opus-4-8` | 主模型 |
 | `sophnet-claude-opus-4-7` | 主模型 |
-| `sophnet-glm-5.2` | 轻量推荐 |
-| `sophnet-glm-5.1` | 轻量（旧版） |
-| `deepseek-v4-flash` | **推荐**（DeepSeek 官方） |
 | `deepseek-v4-pro` | 推理（DeepSeek 官方） |
-| `sophnet-gpt-5.5` | 通用 |
+| `deepseek-v4-flash` | 极速（DeepSeek 官方） |
+| `sophnet-glm-5.2` | 轻量 |
+| `sophnet-kimi-k3` | 长上下文 |
+| `gpt-5.4` | Sophnet GPT-5.4 |
 | `sophnet-deepseekv4-pro` | 推理（Sophnet） |
 | `sophnet-deepseekv4-flash` | 极速（Sophnet） |
-| `azure-gpt-5.5` | 规划 |
-| `azure-gpt-5.4` | 经济 |
+| `sophnet-minimax-m3` | MiniMax |
 
 新增 LiteLLM 别名时：在 `models.json` 的 `models` 数组里复制一条现有条目，改 `slug` / `display_name` / `description` / `priority` 即可。
 
@@ -459,18 +462,18 @@ openai_base_url = "http://localhost:4000/v1"
 
 高质量任务改用 `model = "deepseek-v4-pro"`。
 
-**方案 B：Azure GPT（稳定，无 thinking）**
+**方案 B：Sophnet GPT（默认）**
 
 ```toml
-model = "azure-gpt-5.4"
+model = "sophnet-gpt-5.5"
 model_provider = "openai"
 openai_base_url = "http://localhost:4000/v1"
 ```
 
-**方案 C：Sophnet GPT**
+**方案 C：Sophnet Claude**
 
 ```toml
-model = "sophnet-gpt-5.5"
+model = "sophnet-claude-opus-4-8"
 model_provider = "openai"
 openai_base_url = "http://localhost:4000/v1"
 ```
@@ -478,24 +481,21 @@ openai_base_url = "http://localhost:4000/v1"
 **方案 D：多模型 Profile（Codex 内快速切换）**
 
 ```toml
-model = "deepseek-v4-flash"
+model = "sophnet-gpt-5.5"
 model_provider = "openai"
 openai_base_url = "http://localhost:4000/v1"
+
+[profiles.sophnet-gpt]
+model = "sophnet-gpt-5.5"
+
+[profiles.claude-48]
+model = "sophnet-claude-opus-4-8"
 
 [profiles.deepseek-flash]
 model = "deepseek-v4-flash"
 
 [profiles.deepseek-pro]
 model = "deepseek-v4-pro"
-
-[profiles.azure-gpt54]
-model = "azure-gpt-5.4"
-
-[profiles.azure-gpt55]
-model = "azure-gpt-5.5"
-
-[profiles.sophnet-gpt]
-model = "sophnet-gpt-5.5"
 ```
 
 **方案 E：自定义 Provider 块（多网关时）**
@@ -537,13 +537,17 @@ export OPENAI_API_KEY="sk-litellm-sophnet-azure-local"
 **当前可用 Codex 模型名**（与 `config.yaml` 一致）：
 
 ```
-deepseek-v4-flash      ← 推荐默认
+sophnet-gpt-5.5              ← 默认
+sophnet-claude-opus-4-8
+sophnet-claude-opus-4-7
 deepseek-v4-pro
-azure-gpt-5.4
-azure-gpt-5.5
-sophnet-gpt-5.5
+deepseek-v4-flash
+sophnet-glm-5.2
+sophnet-kimi-k3
+gpt-5.4
 sophnet-deepseekv4-pro
 sophnet-deepseekv4-flash
+sophnet-minimax-m3
 ```
 
 若使用代理/VPN，可在 `~/.codex/.env` 增加：
@@ -556,22 +560,22 @@ https_proxy="http://127.0.0.1:7890"
 ### 4.5 验证 Codex 通路
 
 ```bash
-# DeepSeek flash（推荐）
+# Sophnet GPT（默认）
+curl -s http://localhost:4000/v1/responses \
+  -H "Authorization: Bearer sk-litellm-sophnet-azure-local" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sophnet-gpt-5.5",
+    "input": "Say OK in one word",
+    "max_output_tokens": 32
+  }' | python3 -m json.tool | head -20
+
+# DeepSeek flash
 curl -s http://localhost:4000/v1/responses \
   -H "Authorization: Bearer sk-litellm-sophnet-azure-local" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "deepseek-v4-flash",
-    "input": "Say OK in one word",
-    "max_output_tokens": 32
-  }' | python3 -m json.tool | head -20
-
-# Azure GPT
-curl -s http://localhost:4000/v1/responses \
-  -H "Authorization: Bearer sk-litellm-sophnet-azure-local" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "azure-gpt-5.4",
     "input": "Say OK in one word",
     "max_output_tokens": 32
   }' | python3 -m json.tool | head -20
@@ -581,9 +585,9 @@ CLI 快速测试（已安装 `@openai/codex` 时）：
 
 ```bash
 export OPENAI_API_KEY="sk-litellm-sophnet-azure-local"
+codex --model sophnet-gpt-5.5 "Say OK"
+codex --model sophnet-claude-opus-4-8 "Say OK"
 codex --model deepseek-v4-flash "Say OK"
-codex --model deepseek-v4-pro "Say OK"
-codex --model azure-gpt-5.4 "Say OK"
 ```
 
 ---
@@ -593,7 +597,7 @@ codex --model azure-gpt-5.4 "Say OK"
 | 工具 | 协议 | Base URL | 认证 | 模型名示例 |
 |------|------|----------|------|------------|
 | Claude Code | `/v1/messages` | `http://localhost:4000` | `ANTHROPIC_AUTH_TOKEN` = master key | `sophnet-claude-opus-4-7` |
-| Codex | `/v1/responses` | `http://localhost:4000/v1` | `OPENAI_API_KEY` = master key | `deepseek-v4-flash`（推荐） |
+| Codex | `/v1/responses` | `http://localhost:4000/v1` | `OPENAI_API_KEY` = master key | `sophnet-gpt-5.5`（默认） |
 
 ---
 

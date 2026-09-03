@@ -1,4 +1,6 @@
-import copy
+import asyncio
+import hashlib
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -9,6 +11,8 @@ from litellm.types.utils import CallTypes
 CompletionFn = Callable[..., Awaitable[Any]]
 
 _INTERNAL_REQUEST_KEY = "_vision_interception_internal"
+_MAX_TRANSCRIPTION_CACHE = 256
+_IMAGE_BLOCK_TYPES = {"image_url", "input_image"}
 _TRANSCRIPTION_PROMPT = (
     "Transcribe all visible text in this image exactly. "
     "If there is no readable text, provide a concise factual description. "
@@ -41,6 +45,8 @@ class VisionInterceptionLogger(CustomLogger):
         ]
         self.target_models: Set[str] = set(target_models)
         self._completion_fn = completion_fn or self._router_acompletion
+        self._transcription_cache: OrderedDict[str, Tuple[str, str]] = OrderedDict()
+        self._inflight: Dict[str, asyncio.Task] = {}
 
     @classmethod
     def from_config_yaml(cls, config: Dict[str, Any]) -> "VisionInterceptionLogger":
@@ -66,16 +72,21 @@ class VisionInterceptionLogger(CustomLogger):
         if kwargs.pop(_INTERNAL_REQUEST_KEY, False):
             return kwargs
 
-        messages = kwargs.get("messages")
-        if not isinstance(messages, list) or not self._contains_image(messages):
-            return None
-
         if self._model_group(kwargs) not in self.target_models:
             return None
 
-        transformed_messages = await self._replace_images(messages)
+        if not self._has_image_payload(kwargs):
+            return None
+
         modified_kwargs = kwargs.copy()
-        modified_kwargs["messages"] = transformed_messages
+        if "messages" in modified_kwargs:
+            modified_kwargs["messages"] = await self._replace_images_in_value(
+                modified_kwargs["messages"]
+            )
+        if "input" in modified_kwargs:
+            modified_kwargs["input"] = await self._replace_images_in_value(
+                modified_kwargs["input"]
+            )
         verbose_logger.info(
             "VisionInterception: replaced image inputs [target_model=%s vision_model=%s]",
             self._model_group(kwargs),
@@ -104,48 +115,113 @@ class VisionInterceptionLogger(CustomLogger):
         model = kwargs.get("model")
         return model if isinstance(model, str) else ""
 
-    @staticmethod
-    def _contains_image(messages: List[Dict[str, Any]]) -> bool:
-        return any(
-            isinstance(message.get("content"), list)
-            and any(
-                isinstance(block, Mapping) and block.get("type") == "image_url"
-                for block in message["content"]
-            )
-            for message in messages
-            if isinstance(message, Mapping)
+    @classmethod
+    def _has_image_payload(cls, kwargs: Mapping[str, Any]) -> bool:
+        return cls._contains_image(kwargs.get("messages")) or cls._contains_image(
+            kwargs.get("input")
         )
 
-    async def _replace_images(
-        self, messages: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        transformed = copy.deepcopy(messages)
-        for message in transformed:
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            replacement = []
-            for block in content:
-                if not (
-                    isinstance(block, Mapping) and block.get("type") == "image_url"
-                ):
-                    replacement.append(block)
-                    continue
-                vision_model, transcription = await self._transcribe_image(dict(block))
-                replacement.append(
-                    {
-                        "type": "text",
-                        "text": (
-                            f"[Image transcription by {vision_model}]\n"
-                            f"{transcription}"
-                        ),
-                    }
+    @classmethod
+    def _contains_image(cls, value: Any) -> bool:
+        if isinstance(value, list):
+            return any(cls._contains_image(item) for item in value)
+        if not isinstance(value, Mapping):
+            return False
+        if cls._is_image_block(value):
+            return True
+        content = value.get("content")
+        if isinstance(content, list):
+            return cls._contains_image(content)
+        return False
+
+    @staticmethod
+    def _is_image_block(block: Any) -> bool:
+        return isinstance(block, Mapping) and block.get("type") in _IMAGE_BLOCK_TYPES
+
+    async def _replace_images_in_value(self, value: Any) -> Any:
+        if isinstance(value, list):
+            return list(
+                await asyncio.gather(
+                    *[self._replace_images_in_value(item) for item in value]
                 )
-            message["content"] = replacement
-        return transformed
+            )
+        if isinstance(value, Mapping):
+            if self._is_image_block(value):
+                vision_model, transcription = await self._transcribe_image(dict(value))
+                return self._text_replacement(value, vision_model, transcription)
+            content = value.get("content")
+            if isinstance(content, list):
+                updated = dict(value)
+                updated["content"] = await self._replace_images_in_value(content)
+                return updated
+        return value
+
+    @staticmethod
+    def _text_replacement(
+        block: Mapping[str, Any], vision_model: str, transcription: str
+    ) -> Dict[str, Any]:
+        text = f"[Image transcription by {vision_model}]\n{transcription}"
+        if block.get("type") == "input_image":
+            return {"type": "input_text", "text": text}
+        return {"type": "text", "text": text}
+
+    @staticmethod
+    def _as_chat_image_block(block: Mapping[str, Any]) -> Dict[str, Any]:
+        image_url = block.get("image_url")
+        if image_url is None:
+            image_url = block.get("url")
+        if isinstance(image_url, Mapping):
+            chat_image_url: Dict[str, Any] = {"url": image_url.get("url") or ""}
+            detail = image_url.get("detail") or block.get("detail")
+            if detail:
+                chat_image_url["detail"] = detail
+            return {"type": "image_url", "image_url": chat_image_url}
+        chat_image_url = {"url": image_url if isinstance(image_url, str) else ""}
+        if block.get("detail"):
+            chat_image_url["detail"] = block["detail"]
+        return {"type": "image_url", "image_url": chat_image_url}
+
+    @classmethod
+    def _image_cache_key(cls, image_block: Mapping[str, Any]) -> str:
+        chat_image_block = cls._as_chat_image_block(image_block)
+        image_url = chat_image_block.get("image_url")
+        raw = ""
+        if isinstance(image_url, Mapping):
+            raw = str(image_url.get("url") or "")
+        elif isinstance(image_url, str):
+            raw = image_url
+        return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
+
+    def _remember_transcription(self, key: str, result: Tuple[str, str]) -> None:
+        self._transcription_cache[key] = result
+        self._transcription_cache.move_to_end(key)
+        while len(self._transcription_cache) > _MAX_TRANSCRIPTION_CACHE:
+            self._transcription_cache.popitem(last=False)
 
     async def _transcribe_image(self, image_block: Dict[str, Any]) -> Tuple[str, str]:
+        key = self._image_cache_key(image_block)
+        cached = self._transcription_cache.get(key)
+        if cached is not None:
+            self._transcription_cache.move_to_end(key)
+            return cached
+
+        inflight = self._inflight.get(key)
+        if inflight is None:
+            inflight = asyncio.create_task(self._transcribe_image_uncached(image_block))
+            self._inflight[key] = inflight
+        try:
+            result = await inflight
+            self._remember_transcription(key, result)
+            return result
+        finally:
+            if self._inflight.get(key) is inflight:
+                self._inflight.pop(key, None)
+
+    async def _transcribe_image_uncached(
+        self, image_block: Dict[str, Any]
+    ) -> Tuple[str, str]:
         failures = []
+        chat_image_block = self._as_chat_image_block(image_block)
         for vision_model in [self.vision_model, *self.fallback_vision_models]:
             try:
                 response = await self._completion_fn(
@@ -155,7 +231,7 @@ class VisionInterceptionLogger(CustomLogger):
                             "role": "user",
                             "content": [
                                 {"type": "text", "text": _TRANSCRIPTION_PROMPT},
-                                image_block,
+                                chat_image_block,
                             ],
                         }
                     ],

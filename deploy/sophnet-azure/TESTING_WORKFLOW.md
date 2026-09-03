@@ -125,16 +125,16 @@ curl -s http://localhost:4000/v1/messages \
 
 - `messages.basic.*` — CC `/v1/messages` x 每个 `CHAT_MODELS` 别名（Claude 原生，其余 adapter）
 - `responses.basic.*` — Codex `/v1/responses` x 每个 `CHAT_MODELS` 别名（GPT 原生/桥接，其余 chat bridge）
-- `messages.adapter.orphan_tool_call.{azure-gpt-5.5,sophnet-glm-5.1,deepseek-v4-pro}` — assistant `tool_use` 缺 `tool_result` 时插入占位（前两者走 adapter→chat，deepseek 走原生 Anthropic passthrough）
-- `messages.adapter.empty_tool_result.{azure-gpt-5.5,sophnet-glm-5.1,deepseek-v4-pro}` — `tool_result` 的 `content: []` 仍发出 tool 消息
-- `responses.bridge.interleaved_tool_result` — `function_call` 与 `function_call_output` 被 user 打断时重排（azure-gpt-5.5）
-- `responses.bridge.orphan_tool_call` — 缺 `function_call_output` 时插入占位（azure-gpt-5.5）
+- `messages.adapter.orphan_tool_call.{sophnet-gpt-5.5,sophnet-glm-5.2,deepseek-v4-pro}` — assistant `tool_use` 缺 `tool_result` 时插入占位（前两者走 adapter→chat，deepseek 走原生 Anthropic passthrough）
+- `messages.adapter.empty_tool_result.{sophnet-gpt-5.5,sophnet-glm-5.2,deepseek-v4-pro}` — `tool_result` 的 `content: []` 仍发出 tool 消息
+- `responses.bridge.interleaved_tool_result` — `function_call` 与 `function_call_output` 被 user 打断时重排（sophnet-gpt-5.5）
+- `responses.bridge.orphan_tool_call` — 缺 `function_call_output` 时插入占位（sophnet-gpt-5.5）
 
 ### full tier
 
 - `stream.chat.ttfb.*` — Chat 流式 TTFB
 - `messages.claude.stream` — Messages 流式
-- `adapter.azure.thinking_tools` — Azure reasoning+tools 不挂起
+- `adapter.gpt.thinking_tools` — GPT reasoning+tools 不挂起
 - `adapter.glm.temperature_zero` — GLM temperature=0 应失败
 - `messages.claude.output_format_json` — `output_format` JSON schema
 - `messages.claude.tool_history` — tool_result 多轮

@@ -43,6 +43,18 @@ class TestUseResponsesApiBridgeFlag:
             model="openai/gpt-5.5",
         )
 
+    def test_sophnet_gpt55_stream_forces_chat_bridge(self):
+        assert _should_force_responses_to_chat_bridge(
+            api_base="https://www.sophnet.com/api/open-apis/v1",
+            model="openai/gpt-5.5",
+            stream=True,
+        )
+        assert _should_force_responses_to_chat_bridge(
+            api_base="https://www.sophnet.com/api/open-apis/v1",
+            model="sophnet-gpt-5.5",
+            stream=True,
+        )
+
     def test_sophnet_non_gpt55_forces_chat_bridge(self):
         assert _should_force_responses_to_chat_bridge(
             api_base="https://www.sophnet.com/api/open-apis/v1",

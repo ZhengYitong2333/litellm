@@ -684,6 +684,7 @@ def _should_force_responses_to_chat_bridge(
     api_base: str,
     model: str,
     tools: Optional[Iterable[ToolParam]] = None,
+    stream: Optional[bool] = None,
 ) -> bool:
     """
     Codex /v1/responses: route through chat-completions bridge for providers
@@ -705,6 +706,8 @@ def _should_force_responses_to_chat_bridge(
     if any(host in normalized_api_base for host in azure_hosts):
         return not _has_responses_custom_tool(tools)
     if "sophnet.com" in normalized_api_base:
+        if stream:
+            return True
         return not _supports_sophnet_native_responses_api(model=model)
     return False
 
@@ -1050,7 +1053,7 @@ def responses(
         )
         _api_base = str(litellm_params.api_base or kwargs.get("api_base") or "")
         if _should_force_responses_to_chat_bridge(
-            api_base=_api_base, model=model, tools=tools
+            api_base=_api_base, model=model, tools=tools, stream=stream
         ):
             use_chat_completions_api = True
 

@@ -53,8 +53,6 @@ CHAT_MODELS = [
     "sophnet-deepseekv4-flash",
     "sophnet-minimax-m3",
     "sophnet-claude-opus-4-7",
-    "azure-gpt-5.5",
-    "azure-gpt-5.4",
     "deepseek-v4-pro",
     "deepseek-v4-flash",
 ]
@@ -63,13 +61,11 @@ CLAUDE = "sophnet-claude-opus-4-7"
 GLM = "sophnet-glm-5.2"
 KIMI = "sophnet-kimi-k3"
 GPT55 = "sophnet-gpt-5.5"
-AZURE = "azure-gpt-5.4"
-AZURE55 = "azure-gpt-5.5"
 DEEPSEEK_PRO = "deepseek-v4-pro"
 
-# azure-gpt-5.5 + GLM exercise the adapter -> chat path; deepseek-v4-pro exercises
+# sophnet-gpt-5.5 + GLM exercise the adapter -> chat path; deepseek-v4-pro exercises
 # the native Anthropic passthrough path (api.deepseek.com/anthropic/v1/messages).
-ADAPTER_REGRESSION_MODELS = [AZURE55, GLM, DEEPSEEK_PRO]
+ADAPTER_REGRESSION_MODELS = [GPT55, GLM, DEEPSEEK_PRO]
 
 ANTHROPIC_HEADERS = {"anthropic-version": "2023-06-01"}
 
@@ -278,7 +274,7 @@ def case_chat_basic(model: str) -> dict:
         "messages": [{"role": "user", "content": "Reply with exactly one word: OK"}],
         "max_tokens": 256 if model == KIMI else 32,
     }
-    if not model.startswith("sophnet-gpt") and not model.startswith("azure-gpt"):
+    if not model.startswith("sophnet-gpt"):
         if model not in {CLAUDE, KIMI}:
             payload["temperature"] = 0
     r = post("/v1/chat/completions", payload, retries=1)
@@ -304,7 +300,7 @@ def case_chat_reasoning(model: str) -> dict:
         ],
         "max_tokens": 128,
     }
-    if model.startswith("azure-gpt") or model.startswith("sophnet-gpt"):
+    if model.startswith("sophnet-gpt"):
         payload["reasoning_effort"] = "low"
     elif "glm" in model or "deepseek" in model:
         payload["extra_body"] = {"thinking": {"type": "enabled"}}
@@ -542,11 +538,11 @@ def case_adapter_output_format_json() -> dict:
     return r
 
 
-def case_azure_messages_thinking_tools() -> dict:
+def case_gpt_messages_thinking_tools() -> dict:
     r = post(
         "/v1/messages",
         {
-            "model": AZURE,
+            "model": GPT55,
             "max_tokens": 128,
             "thinking": {"type": "enabled", "budget_tokens": 512},
             "tools": ANTHROPIC_TOOLS,
@@ -1010,14 +1006,14 @@ def build_cases() -> List[Case]:
                 id="responses.bridge.interleaved_tool_result",
                 tier="matrix",
                 why="Responses bridge pulls tool output contiguous after function_call",
-                fn=lambda: case_responses_bridge_interleaved_tool_result(AZURE55),
+                fn=lambda: case_responses_bridge_interleaved_tool_result(GPT55),
                 timeout=180,
             ),
             Case(
                 id="responses.bridge.orphan_tool_call",
                 tier="matrix",
                 why="Responses bridge inserts placeholder for missing function_call_output",
-                fn=lambda: case_responses_bridge_orphan_tool_call(AZURE55),
+                fn=lambda: case_responses_bridge_orphan_tool_call(GPT55),
                 timeout=180,
             ),
         ]
@@ -1213,10 +1209,10 @@ def build_cases() -> List[Case]:
     )
     cases.append(
         Case(
-            id="adapter.azure.thinking_tools",
+            id="adapter.gpt.thinking_tools",
             tier="full",
-            why="Azure adapter: reasoning + tools without Responses recursion hang",
-            fn=case_azure_messages_thinking_tools,
+            why="GPT adapter: reasoning + tools without Responses recursion hang",
+            fn=case_gpt_messages_thinking_tools,
             timeout=240,
         )
     )
@@ -1246,7 +1242,7 @@ def build_cases() -> List[Case]:
         )
     )
 
-    for model in (GPT55, AZURE):
+    for model in (GPT55,):
         if model != CLAUDE:
             cases.append(
                 Case(
@@ -1535,17 +1531,25 @@ def case_responses_stream_matrix(model: str) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=90) as resp:
             events = 0
+            first: Optional[float] = None
             for line in resp:
                 line_str = line.decode(errors="replace")
                 if line_str.startswith("data:") and line_str.strip() != "data:":
                     events += 1
-            ok = events > 0
-            return {
+                    if first is None:
+                        first = time.perf_counter()
+            ttfb = (first - start) if first else None
+            hung = model == GPT55 and ttfb is not None and ttfb >= 20
+            ok = events > 0 and not hung
+            result = {
                 "ok": ok,
                 "status": resp.status if ok else None,
-                "latency_s": round(time.perf_counter() - start, 2),
-                "preview": f"events={events}",
+                "latency_s": round(ttfb or (time.perf_counter() - start), 2),
+                "preview": f"events={events} ttfb={None if ttfb is None else round(ttfb, 2)}s",
             }
+            if hung:
+                result["error"] = f"Codex stream hung: ttfb={ttfb:.2f}s"
+            return result
     except urllib.error.HTTPError as exc:  # noqa: BLE001
         if exc.code in RETRY_STATUS:
             return {"ok": True, "skip": True, "preview": "upstream rate limit"}
