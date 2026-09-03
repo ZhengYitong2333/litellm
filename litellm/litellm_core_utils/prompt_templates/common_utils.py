@@ -1634,6 +1634,25 @@ def _attempt_json_repair(s: str) -> Optional[Any]:
     return None
 
 
+def serialize_tool_call_arguments_for_api(arguments: Any) -> str:
+    """
+    Serialize Responses API tool ``arguments`` for Chat Completions history.
+
+    Codex may send ``arguments`` as a JSON object rather than a string; ``str(dict)``
+    produces invalid JSON (single quotes, Python booleans) and breaks downstream
+    providers during the Responses bridge.
+    """
+    import json
+
+    if arguments is None:
+        return ""
+    if isinstance(arguments, dict):
+        return json.dumps(arguments, ensure_ascii=False)
+    if isinstance(arguments, str):
+        return arguments
+    return str(arguments)
+
+
 def parse_tool_call_arguments(
     arguments: Optional[str],
     tool_name: Optional[str] = None,

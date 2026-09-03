@@ -12,6 +12,9 @@ from typing_extensions import TypedDict
 
 from litellm.caching import InMemoryCache
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+from litellm.litellm_core_utils.prompt_templates.common_utils import (
+    serialize_tool_call_arguments_for_api,
+)
 
 try:
     from litellm.llms.openai.chat.openai_compatible_request_utils import (
@@ -1568,7 +1571,9 @@ class LiteLLMCompletionResponsesConfig:
                 ),
                 function=ChatCompletionToolCallFunctionChunk(
                     name=function.get("name") or "",
-                    arguments=str(function.get("arguments") or ""),
+                    arguments=serialize_tool_call_arguments_for_api(
+                        function.get("arguments")
+                    ),
                 ),
                 index=0,
             )
@@ -1612,7 +1617,9 @@ class LiteLLMCompletionResponsesConfig:
             type="function",
             function=ChatCompletionToolCallFunctionChunk(
                 name=function_call.get("name") or "",
-                arguments=str(function_call.get("arguments") or ""),
+                arguments=serialize_tool_call_arguments_for_api(
+                    function_call.get("arguments")
+                ),
             ),
             index=0,
         )

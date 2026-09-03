@@ -727,6 +727,43 @@ class TestFunctionCallTransformation:
         assert function.get("name") == "get_weather"
         assert function.get("arguments") == '{"location": "São Paulo, Brazil"}'
 
+    def test_function_call_transformation_dict_arguments(self):
+        """Codex may send function_call.arguments as an object, not a JSON string."""
+        import json
+
+        exec_args = {
+            "cmd": "cat /Users/yitong/.codex/skills/webapp-testing/SKILL.md",
+            "justification": "",
+            "login": True,
+            "max_output_tokens": 6000,
+            "prefix_rule": [],
+            "sandbox_permissions": "use_default",
+            "shell": "zsh",
+            "workdir": "/Users/yitong/Documents/Projects/litellm",
+        }
+        function_call_item = {
+            "type": "function_call",
+            "name": "exec_command",
+            "arguments": exec_args,
+            "call_id": "call_exec",
+            "id": "call_exec",
+            "status": "completed",
+        }
+
+        result = LiteLLMCompletionResponsesConfig._transform_responses_api_function_call_to_chat_completion_message(
+            function_call=function_call_item
+        )
+        tool_call = result[0].get("tool_calls", [])[0]
+        arguments = tool_call.get("function", {}).get("arguments")
+        assert arguments == json.dumps(exec_args, ensure_ascii=False)
+
+        sanitized = LiteLLMCompletionResponsesConfig._sanitize_tool_call_arguments_in_messages(
+            messages=list(result)
+        )
+        sanitized_args = sanitized[0]["tool_calls"][0]["function"]["arguments"]
+        assert sanitized_args == arguments
+        assert sanitized_args != "{}"
+
     def test_complete_input_transformation_with_function_calls(self):
         """Test the complete transformation with the exact input from the issue"""
         test_input = [
