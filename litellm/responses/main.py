@@ -680,6 +680,14 @@ def _has_responses_custom_tool(tools: Optional[Iterable[ToolParam]]) -> bool:
     )
 
 
+def _has_responses_function_tool(tools: Optional[Iterable[ToolParam]]) -> bool:
+    if tools is None:
+        return False
+    return any(
+        isinstance(tool, dict) and tool.get("type") == "function" for tool in tools
+    )
+
+
 def _should_force_responses_to_chat_bridge(
     api_base: str,
     model: str,
@@ -704,7 +712,9 @@ def _should_force_responses_to_chat_bridge(
     if any(host in normalized_api_base for host in minimax_hosts):
         return True
     if any(host in normalized_api_base for host in azure_hosts):
-        return not _has_responses_custom_tool(tools)
+        return _has_responses_function_tool(tools) and not _has_responses_custom_tool(
+            tools
+        )
     if "sophnet.com" in normalized_api_base:
         if stream:
             return True

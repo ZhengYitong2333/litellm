@@ -155,6 +155,25 @@ class TestUseResponsesApiBridgeFlag:
             tools=tools,
         )
 
+    def test_azure_without_tools_uses_native_responses(self):
+        """Models that only exist on /v1/responses (e.g. computer-use-preview) break
+        when every Azure call is bridged, so leave tool-free requests native."""
+        for tools in (None, []):
+            assert not _should_force_responses_to_chat_bridge(
+                api_base="https://example.openai.azure.com/openai/responses",
+                model="azure/computer-use-preview",
+                tools=tools,
+            )
+
+    def test_azure_previous_response_id_uses_native_responses(self):
+        """previous_response_id affinity rewrites encrypted item IDs on the native
+        path; bridged requests bypass it."""
+        assert not _should_force_responses_to_chat_bridge(
+            api_base="https://account-a.openai.azure.com/",
+            model="azure/gpt-5.3-codex",
+            tools=None,
+        )
+
     @patch(
         "litellm.responses.main.litellm_completion_transformation_handler.response_api_handler"
     )
