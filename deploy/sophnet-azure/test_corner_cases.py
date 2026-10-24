@@ -46,11 +46,12 @@ Tier = Literal["quick", "full", "matrix", "stress"]
 Expect = Literal["ok", "fail", "skip"]
 
 CHAT_MODELS = [
-    "sophnet-glm-5.2",
+    "sophnet-glm-5.3",
+    "sophnet-glm-5.3-flash",
     "sophnet-kimi-k3",
     "sophnet-gpt-5.5",
     "sophnet-deepseekv4-pro",
-    "sophnet-deepseekv4-flash",
+    "sophnet-deepseek-v4-flash-vision-exp",
     "sophnet-minimax-m3",
     "sophnet-claude-opus-4-7",
     "deepseek-v4-pro",
@@ -58,7 +59,7 @@ CHAT_MODELS = [
 ]
 
 CLAUDE = "sophnet-claude-opus-4-7"
-GLM = "sophnet-glm-5.2"
+GLM = "sophnet-glm-5.3"
 KIMI = "sophnet-kimi-k3"
 GPT55 = "sophnet-gpt-5.5"
 DEEPSEEK_PRO = "deepseek-v4-pro"

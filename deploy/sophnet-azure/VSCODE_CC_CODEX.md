@@ -239,11 +239,12 @@ Proxy 在 `config.yaml` 中注册的 **`model_name`**（客户端填写的名字
 | `sophnet-gpt-5.5` | Sophnet OpenAI 兼容 | ⭐ **Opus 推荐** | 规划 / 复杂推理 |
 | `deepseek-v4-flash` | DeepSeek 官方 | ⭐ **Haiku 推荐** | 快、便宜，thinking |
 | `deepseek-v4-pro` | DeepSeek 官方 | 高质量 | 1M 上下文 |
-| `sophnet-glm-5.2` | Sophnet OpenAI 兼容 | ⭐ **轻量推荐** | 经 LiteLLM 适配器 |
+| `sophnet-glm-5.3` | Sophnet OpenAI 兼容 | ⭐ **轻量推荐** | 经 LiteLLM 适配器 |
+| `sophnet-glm-5.3-flash` | Sophnet OpenAI 兼容 | 识图 | GLM 5.3 原生多模态 |
 | `sophnet-claude-opus-4-8` | Sophnet Anthropic | 备选 | 原生 Anthropic 通道 |
 | `gpt-5.4` | Sophnet OpenAI 兼容 | 备选 | Sophnet GPT-5.4 |
 | `sophnet-deepseekv4-pro` | Sophnet OpenAI 兼容 | 备选 | Sophnet 版 DeepSeek |
-| `sophnet-deepseekv4-flash` | Sophnet OpenAI 兼容 | 备选 | Sophnet 版轻量 |
+| `sophnet-deepseek-v4-flash-vision-exp` | Sophnet OpenAI 兼容 | 备选 | Sophnet 版轻量 |
 | `sophnet-kimi-k3` | Sophnet OpenAI 兼容 | 备选 | 长上下文 |
 | `sophnet-minimax-m3` | Sophnet Anthropic | 备选 | MiniMax |
 
@@ -256,11 +257,12 @@ Proxy 在 `config.yaml` 中注册的 **`model_name`**（客户端填写的名字
 | `sophnet-claude-opus-4-7` | Sophnet Anthropic | 主模型 | 原生 Anthropic 通道 |
 | `deepseek-v4-pro` | DeepSeek 官方 | 高质量 | 1M 上下文，thinking 默认开启 |
 | `deepseek-v4-flash` | DeepSeek 官方 | 极速 | 快、便宜，已验证 Codex 通路 |
-| `sophnet-glm-5.2` | Sophnet | 轻量 | GLM 5.2，经 chat bridge |
+| `sophnet-glm-5.3` | Sophnet | 轻量 | GLM 5.3，经 chat bridge |
+| `sophnet-glm-5.3-flash` | Sophnet OpenAI 兼容 | 识图 | GLM 5.3 原生多模态 |
 | `sophnet-kimi-k3` | Sophnet | 长上下文 | Kimi K3 |
 | `gpt-5.4` | Sophnet | 备选 | Sophnet GPT-5.4 |
 | `sophnet-deepseekv4-pro` | Sophnet | 备选 | Sophnet 版 DeepSeek |
-| `sophnet-deepseekv4-flash` | Sophnet | 备选 | Sophnet 版 DeepSeek 轻量 |
+| `sophnet-deepseek-v4-flash-vision-exp` | Sophnet | 备选 | Sophnet 版 DeepSeek 轻量 |
 | `sophnet-minimax-m3` | Sophnet Anthropic | 备选 | MiniMax |
 
 查询当前可用列表：
@@ -285,9 +287,9 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 | Sonnet | `sophnet-claude-opus-4-7` | `ANTHROPIC_DEFAULT_SONNET_MODEL` |
 | Opus | `sophnet-gpt-5.5` | `ANTHROPIC_DEFAULT_OPUS_MODEL` |
 | Haiku | `deepseek-v4-flash` | `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
-| **GLM 5.2** | `sophnet-glm-5.2` | `ANTHROPIC_CUSTOM_MODEL_OPTION`（第 4 项） |
+| **GLM 5.3** | `sophnet-glm-5.3` | `ANTHROPIC_CUSTOM_MODEL_OPTION`（第 4 项） |
 
-> Claude Code 的 `/model` 选单只有 **Sonnet / Opus / Haiku + 1 个自定义项** 共 4 个选项。GLM 5.2 必须通过 `ANTHROPIC_CUSTOM_MODEL_OPTION` 添加；`availableModels` 填具体 model id 会因去重导致选单异常。
+> Claude Code 的 `/model` 选单只有 **Sonnet / Opus / Haiku + 1 个自定义项** 共 4 个选项。GLM 5.3 必须通过 `ANTHROPIC_CUSTOM_MODEL_OPTION` 添加；`availableModels` 填具体 model id 会因去重导致选单异常。
 
 **三档 + GLM 默认映射：**
 
@@ -296,7 +298,8 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 | Sonnet | `sophnet-claude-opus-4-7` | 日常编码主模型 |
 | Opus | `sophnet-gpt-5.5` | 规划、复杂任务 |
 | Haiku | `deepseek-v4-flash` | 轻量、快速 |
-| GLM 5.2 | `sophnet-glm-5.2` | 轻量中文 / 低成本 |
+| GLM 5.3 | `sophnet-glm-5.3` | 轻量中文 / 低成本 |
+| GLM 5.3 Flash | `sophnet-glm-5.3-flash` | 识图（原生多模态） |
 
 ### 3.1 推荐：项目级 + 用户级配置（macOS）
 
@@ -314,9 +317,9 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
     { "name": "ANTHROPIC_DEFAULT_SONNET_MODEL", "value": "sophnet-claude-opus-4-7" },
     { "name": "ANTHROPIC_DEFAULT_OPUS_MODEL", "value": "sophnet-gpt-5.5" },
     { "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL", "value": "deepseek-v4-flash" },
-    { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION", "value": "sophnet-glm-5.2" },
-    { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME", "value": "GLM 5.2" },
-    { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION", "value": "轻量 · Sophnet GLM-5.2" },
+    { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION", "value": "sophnet-glm-5.3" },
+    { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME", "value": "GLM 5.3" },
+    { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION", "value": "轻量 · Sophnet GLM-5.3" },
     { "name": "ENABLE_TOOL_SEARCH", "value": "true" },
     { "name": "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "value": "1" }
   ]
@@ -335,9 +338,9 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
     "ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION": "规划 · Sophnet GPT-5.5",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION": "极速 · DeepSeek V4 Flash（官方）",
-    "ANTHROPIC_CUSTOM_MODEL_OPTION": "sophnet-glm-5.2",
-    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "GLM 5.2",
-    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "轻量 · Sophnet GLM-5.2",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION": "sophnet-glm-5.3",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "GLM 5.3",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "轻量 · Sophnet GLM-5.3",
     "ENABLE_TOOL_SEARCH": "true",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   },
@@ -353,7 +356,7 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 | `ANTHROPIC_AUTH_TOKEN` | 填 LiteLLM `master_key`，Proxy 用它鉴权 |
 | `LITELLM_PROXY_*` | VS Code 扩展专用，与 `disableLoginPrompt` 配合跳过 Anthropic 登录页 |
 | `ANTHROPIC_DEFAULT_*_MODEL` | 覆盖 CC 默认的 `claude-sonnet-4-5` 等名字，必须与 `config.yaml` 别名一致 |
-| `ANTHROPIC_CUSTOM_MODEL_OPTION` | 第 4 个 `/model` 选项（本方案为 `sophnet-glm-5.2`） |
+| `ANTHROPIC_CUSTOM_MODEL_OPTION` | 第 4 个 `/model` 选项（本方案为 `sophnet-glm-5.3`） |
 | `ENABLE_TOOL_SEARCH` | 走第三方网关时建议开启 MCP tool 转发 |
 
 **③ 完全退出并重启 VS Code**（`Cmd+Q`），再打开本项目。
@@ -365,7 +368,7 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 ```
 /model sophnet-gpt-5.5          # Opus
 /model deepseek-v4-flash      # Haiku
-/model sophnet-glm-5.2        # GLM 5.2（或选单第 4 项）
+/model sophnet-glm-5.3        # GLM 5.3（或选单第 4 项）
 /model sophnet-claude-opus-4-7
 ```
 
@@ -441,11 +444,12 @@ experimental_bearer_token = "sk-litellm-sophnet-azure-local"
 | `sophnet-claude-opus-4-7` | 主模型 |
 | `deepseek-v4-pro` | 推理（DeepSeek 官方） |
 | `deepseek-v4-flash` | 极速（DeepSeek 官方） |
-| `sophnet-glm-5.2` | 轻量 |
+| `sophnet-glm-5.3` | 轻量 |
+| `sophnet-glm-5.3-flash` | 识图（原生多模态） |
 | `sophnet-kimi-k3` | 长上下文 |
 | `gpt-5.4` | Sophnet GPT-5.4 |
 | `sophnet-deepseekv4-pro` | 推理（Sophnet） |
-| `sophnet-deepseekv4-flash` | 极速（Sophnet） |
+| `sophnet-deepseek-v4-flash-vision-exp` | 极速（Sophnet） |
 | `sophnet-minimax-m3` | MiniMax |
 
 新增 LiteLLM 别名时：在 `models.json` 的 `models` 数组里复制一条现有条目，改 `slug` / `display_name` / `description` / `priority` 即可。
@@ -542,11 +546,11 @@ sophnet-claude-opus-4-8
 sophnet-claude-opus-4-7
 deepseek-v4-pro
 deepseek-v4-flash
-sophnet-glm-5.2
+sophnet-glm-5.3
 sophnet-kimi-k3
 gpt-5.4
 sophnet-deepseekv4-pro
-sophnet-deepseekv4-flash
+sophnet-deepseek-v4-flash-vision-exp
 sophnet-minimax-m3
 ```
 
