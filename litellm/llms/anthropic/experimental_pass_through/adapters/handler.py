@@ -524,7 +524,7 @@ class LiteLLMMessagesToCompletionTransformationHandler:
         completion_kwargs["tools"] = filtered_tools
 
     @staticmethod
-    def _prepare_completion_kwargs(
+    def _prepare_completion_kwargs(  # noqa: PLR0915
         *,
         max_tokens: int,
         messages: List[Dict],

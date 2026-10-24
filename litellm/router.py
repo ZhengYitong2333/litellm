@@ -2529,7 +2529,7 @@ class Router:
 
         return cast("ResponseInputParam", base + continuation)
 
-    async def _aresponses_streaming_iterator(
+    async def _aresponses_streaming_iterator(  # noqa: PLR0915
         self,
         response: "BaseResponsesAPIStreamingIterator",
         initial_kwargs: Dict[str, Any],
@@ -2633,11 +2633,7 @@ class Router:
                 # async generators always expose aclose — no defensive check needed.
                 await self._async_generator.aclose()
 
-        async def stream_with_fallbacks():
-            from litellm.types.llms.openai import (
-                ResponsesAPIStreamEvents as _StreamEvents,
-            )
-
+        async def stream_with_fallbacks():  # noqa: PLR0915
             fallback_response = None
             yielded_visible_output = False
             fallbacks: Optional[List] = initial_kwargs.get("fallbacks", self.fallbacks)

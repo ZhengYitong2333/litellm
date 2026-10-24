@@ -83,125 +83,140 @@ class _ResponsesStreamState:
         if event_type is None:
             return
 
-        if event_type == _StreamEvents.OUTPUT_TEXT_DELTA:
-            delta = self._safe_str(getattr(event, "delta", None))
-            if delta is not None:
-                self._visible_text.append(delta)
-                self.has_text = True
+        handler = self._EVENT_HANDLERS.get(event_type)
+        if handler is not None:
+            handler(self, event)
 
-        elif event_type == _StreamEvents.OUTPUT_ITEM_ADDED:
-            item_id = self._resolve_item_id(event)
-            if item_id is not None:
-                # Determine item type and metadata from the nested `item` payload
-                item_payload = getattr(event, "item", None)
-                if item_payload is not None and not isinstance(item_payload, dict):
-                    item_type = self._safe_str(getattr(item_payload, "type", None))
-                    _name = self._safe_str(getattr(item_payload, "name", None))
-                    _call_id = self._safe_str(getattr(item_payload, "call_id", None))
-                elif isinstance(item_payload, dict):
-                    item_type = self._safe_str(item_payload.get("type"))
-                    _name = self._safe_str(item_payload.get("name"))
-                    _call_id = self._safe_str(item_payload.get("call_id"))
-                else:
-                    item_type = None
-                    _name = None
-                    _call_id = None
+    def _observe_output_text_delta(self, event: Any) -> None:
+        delta = self._safe_str(getattr(event, "delta", None))
+        if delta is not None:
+            self._visible_text.append(delta)
+            self.has_text = True
 
-                in_flight = {
-                    "item_id": item_id,
-                    "item_type": item_type,
-                    "has_delta": False,
-                }
-                # Seed tool-call metadata for later delta tracking
-                if item_type == "function_call":
-                    if item_id not in self._tool_calls:
-                        self._tool_calls[item_id] = {
-                            "item_id": item_id,
-                            "call_id": _call_id or "",
-                            "name": _name or "",
-                            "arguments_str": "",
-                            "done": False,
-                        }
-                    else:
-                        tc = self._tool_calls[item_id]
-                        if _name:
-                            tc["name"] = _name
-                        if _call_id:
-                            tc["call_id"] = _call_id
-                self._in_flight_items[item_id] = in_flight
+    def _observe_output_item_added(self, event: Any) -> None:
+        item_id = self._resolve_item_id(event)
+        if item_id is None:
+            return
 
-        elif event_type == _StreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA:
-            item_id = self._safe_str(getattr(event, "item_id", None))
-            delta = self._safe_str(getattr(event, "delta", None)) or ""
-            if item_id is not None:
-                self._ensure_tool_call(item_id)
-                self._tool_calls[item_id]["arguments_str"] += delta
-                self.has_tool_delta = True
-                self._mark_item_has_delta(item_id)
+        item_payload = getattr(event, "item", None)
+        if item_payload is not None and not isinstance(item_payload, dict):
+            item_type = self._safe_str(getattr(item_payload, "type", None))
+            name = self._safe_str(getattr(item_payload, "name", None))
+            call_id = self._safe_str(getattr(item_payload, "call_id", None))
+        elif isinstance(item_payload, dict):
+            item_type = self._safe_str(item_payload.get("type"))
+            name = self._safe_str(item_payload.get("name"))
+            call_id = self._safe_str(item_payload.get("call_id"))
+        else:
+            item_type = None
+            name = None
+            call_id = None
 
-        elif event_type == _StreamEvents.FUNCTION_CALL_ARGUMENTS_DONE:
-            item_id = self._safe_str(getattr(event, "item_id", None))
-            arguments = self._safe_str(getattr(event, "arguments", None)) or ""
-            if item_id is not None:
-                self._ensure_tool_call(item_id)
-                # Override accumulated value with the complete payload
-                self._tool_calls[item_id]["arguments_str"] = arguments
-                self._tool_calls[item_id]["done"] = True
-                self.has_tool_delta = True
-                self._mark_item_has_delta(item_id)
+        if item_type == "function_call":
+            self._seed_tool_call(item_id, name, call_id)
+        self._in_flight_items[item_id] = {
+            "item_id": item_id,
+            "item_type": item_type,
+            "has_delta": False,
+        }
 
-        elif event_type == _StreamEvents.REASONING_SUMMARY_TEXT_DELTA:
-            item_id = self._safe_str(getattr(event, "item_id", None))
-            summary_index = self._safe_int(getattr(event, "summary_index", 0))
-            delta = self._safe_str(getattr(event, "delta", None)) or ""
-            if item_id is not None:
-                key = self._reasoning_key(item_id, summary_index)
-                if key not in self._reasoning:
-                    self._reasoning[key] = {
-                        "item_id": item_id,
-                        "summary_index": summary_index,
-                        "summary_text": "",
-                        "done": False,
-                    }
-                self._reasoning[key]["summary_text"] += delta
-                self.has_reasoning_delta = True
-                self._mark_item_has_delta(item_id)
+    def _seed_tool_call(
+        self,
+        item_id: str,
+        name: Optional[str],
+        call_id: Optional[str],
+    ) -> None:
+        """Seed tool-call metadata from OUTPUT_ITEM_ADDED for later delta tracking."""
+        if item_id not in self._tool_calls:
+            self._tool_calls[item_id] = {
+                "item_id": item_id,
+                "call_id": call_id or "",
+                "name": name or "",
+                "arguments_str": "",
+                "done": False,
+            }
+            return
+        tc = self._tool_calls[item_id]
+        if name:
+            tc["name"] = name
+        if call_id:
+            tc["call_id"] = call_id
 
-        elif event_type == _StreamEvents.REASONING_SUMMARY_TEXT_DONE:
-            item_id = self._safe_str(getattr(event, "item_id", None))
-            summary_index = self._safe_int(getattr(event, "summary_index", 0))
-            text = self._safe_str(getattr(event, "text", None)) or ""
-            if item_id is not None:
-                key = self._reasoning_key(item_id, summary_index)
-                # Override accumulated value with the complete payload
-                self._reasoning[key] = {
-                    "item_id": item_id,
-                    "summary_index": summary_index,
-                    "summary_text": text,
-                    "done": True,
-                }
-                self.has_reasoning_delta = True
-                self._mark_item_has_delta(item_id)
+    def _observe_function_call_arguments_delta(self, event: Any) -> None:
+        item_id = self._safe_str(getattr(event, "item_id", None))
+        delta = self._safe_str(getattr(event, "delta", None)) or ""
+        if item_id is not None:
+            self._ensure_tool_call(item_id)
+            self._tool_calls[item_id]["arguments_str"] += delta
+            self.has_tool_delta = True
+            self._mark_item_has_delta(item_id)
 
-        elif event_type == _StreamEvents.OUTPUT_ITEM_DONE:
-            item_id = self._resolve_item_id(event)
-            if item_id is not None:
-                self._in_flight_items.pop(item_id, None)
-                # Saturate completed tool-call args from the event item payload
-                item_payload = getattr(event, "item", None)
-                if item_id in self._tool_calls:
-                    tc = self._tool_calls[item_id]
-                    tc["done"] = True
-                    # If the event carries final arguments, overwrite
-                    if item_payload is not None:
-                        event_args = self._safe_str(
-                            getattr(item_payload, "arguments", None)
-                            if not isinstance(item_payload, dict)
-                            else item_payload.get("arguments")
-                        )
-                        if event_args is not None:
-                            tc["arguments_str"] = event_args
-                            tc["done"] = True
+    def _observe_function_call_arguments_done(self, event: Any) -> None:
+        item_id = self._safe_str(getattr(event, "item_id", None))
+        arguments = self._safe_str(getattr(event, "arguments", None)) or ""
+        if item_id is not None:
+            self._ensure_tool_call(item_id)
+            # Override accumulated value with the complete payload
+            self._tool_calls[item_id]["arguments_str"] = arguments
+            self._tool_calls[item_id]["done"] = True
+            self.has_tool_delta = True
+            self._mark_item_has_delta(item_id)
+
+    def _observe_reasoning_summary_text_delta(self, event: Any) -> None:
+        item_id = self._safe_str(getattr(event, "item_id", None))
+        summary_index = self._safe_int(getattr(event, "summary_index", 0))
+        delta = self._safe_str(getattr(event, "delta", None)) or ""
+        if item_id is None:
+            return
+        key = self._reasoning_key(item_id, summary_index)
+        if key not in self._reasoning:
+            self._reasoning[key] = {
+                "item_id": item_id,
+                "summary_index": summary_index,
+                "summary_text": "",
+                "done": False,
+            }
+        self._reasoning[key]["summary_text"] += delta
+        self.has_reasoning_delta = True
+        self._mark_item_has_delta(item_id)
+
+    def _observe_reasoning_summary_text_done(self, event: Any) -> None:
+        item_id = self._safe_str(getattr(event, "item_id", None))
+        summary_index = self._safe_int(getattr(event, "summary_index", 0))
+        text = self._safe_str(getattr(event, "text", None)) or ""
+        if item_id is None:
+            return
+        # Override accumulated value with the complete payload
+        self._reasoning[self._reasoning_key(item_id, summary_index)] = {
+            "item_id": item_id,
+            "summary_index": summary_index,
+            "summary_text": text,
+            "done": True,
+        }
+        self.has_reasoning_delta = True
+        self._mark_item_has_delta(item_id)
+
+    def _observe_output_item_done(self, event: Any) -> None:
+        item_id = self._resolve_item_id(event)
+        if item_id is None:
+            return
+
+        self._in_flight_items.pop(item_id, None)
+        tc = self._tool_calls.get(item_id)
+        if tc is None:
+            return
+
+        tc["done"] = True
+        item_payload = getattr(event, "item", None)
+        if item_payload is None:
+            return
+        event_args = self._safe_str(
+            getattr(item_payload, "arguments", None)
+            if not isinstance(item_payload, dict)
+            else item_payload.get("arguments")
+        )
+        if event_args is not None:
+            tc["arguments_str"] = event_args
 
     def is_visible(self, event: Any) -> bool:
         """
@@ -315,7 +330,6 @@ class _ResponsesStreamState:
     def _ensure_tool_call(self, item_id: str) -> None:
         """Initialize a partial tool-call tracking entry if missing."""
         if item_id not in self._tool_calls:
-            in_flight = self._in_flight_items.get(item_id, {})
             self._tool_calls[item_id] = {
                 "item_id": item_id,
                 "call_id": "",
@@ -332,3 +346,13 @@ class _ResponsesStreamState:
     @staticmethod
     def _reasoning_key(item_id: str, summary_index: int) -> str:
         return f"{item_id}:{summary_index}"
+
+    _EVENT_HANDLERS = {
+        _StreamEvents.OUTPUT_TEXT_DELTA: _observe_output_text_delta,
+        _StreamEvents.OUTPUT_ITEM_ADDED: _observe_output_item_added,
+        _StreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA: _observe_function_call_arguments_delta,
+        _StreamEvents.FUNCTION_CALL_ARGUMENTS_DONE: _observe_function_call_arguments_done,
+        _StreamEvents.REASONING_SUMMARY_TEXT_DELTA: _observe_reasoning_summary_text_delta,
+        _StreamEvents.REASONING_SUMMARY_TEXT_DONE: _observe_reasoning_summary_text_done,
+        _StreamEvents.OUTPUT_ITEM_DONE: _observe_output_item_done,
+    }

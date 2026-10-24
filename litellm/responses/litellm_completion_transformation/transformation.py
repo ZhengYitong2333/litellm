@@ -1131,7 +1131,7 @@ class LiteLLMCompletionResponsesConfig:
         return fixed_messages
 
     @staticmethod
-    def _ensure_assistant_tool_calls_have_tool_results(
+    def _ensure_assistant_tool_calls_have_tool_results(  # noqa: PLR0915
         messages: Sequence[Any],
         *,
         copy_messages: bool = True,

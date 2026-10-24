@@ -194,29 +194,19 @@ class OpenAIGPT5Config(OpenAIGPTConfig):
             if param not in non_supported_params
         ]
 
-    def map_openai_params(
+    def _normalize_and_validate_reasoning_effort(
         self,
         non_default_params: dict,
         optional_params: dict,
         model: str,
         drop_params: bool,
-    ) -> dict:
-        if self.is_model_gpt_5_search_model(model):
-            if "max_tokens" in non_default_params:
-                optional_params["max_completion_tokens"] = non_default_params.pop(
-                    "max_tokens"
-                )
-            return super()._map_openai_params(
-                non_default_params=non_default_params,
-                optional_params=optional_params,
-                model=model,
-                drop_params=drop_params,
-            )
+    ) -> str:
+        """Normalize dict reasoning_effort and enforce per-model level support.
 
-        # Get raw reasoning_effort and effective effort level for all guards.
-        # Use effective_effort (extracted string) for xhigh validation, "none" checks, and
-        # tool/sampling guards — dict inputs like {"effort": "none", "summary": "detailed"}
-        # must be treated as effort="none" to avoid incorrect tool-drop or sampling errors.
+        Dict inputs like {"effort": "none", "summary": "detailed"} are treated as
+        effort="none" for the downstream guards, otherwise they would incorrectly
+        trigger tool-drop or sampling errors.
+        """
         raw_reasoning_effort = non_default_params.get(
             "reasoning_effort"
         ) or optional_params.get("reasoning_effort")
@@ -236,35 +226,58 @@ class OpenAIGPT5Config(OpenAIGPTConfig):
 
         if effective_effort == "xhigh":
             # xhigh is an opt-in capability: only allow if model explicitly supports it.
-            if not self._supports_reasoning_effort_level(model, effective_effort):
-                if litellm.drop_params or drop_params:
-                    non_default_params.pop("reasoning_effort", None)
-                    optional_params.pop("reasoning_effort", None)
-                else:
-                    raise litellm.utils.UnsupportedParamsError(
-                        message=(
-                            f"reasoning_effort={effective_effort} is not supported for this model."
-                        ),
-                        status_code=400,
-                    )
+            unsupported = not self._supports_reasoning_effort_level(
+                model, effective_effort
+            )
         elif effective_effort in ("minimal", "low"):
             # minimal/low are opt-out: unknown models pass through; only block when
             # the model map explicitly sets supports_{level}_reasoning_effort=false.
             # Example: gpt-5.5-pro only accepts {medium, high, xhigh}, so it sets
             # supports_low_reasoning_effort=false (and supports_minimal=false).
-            if self._is_reasoning_effort_level_explicitly_disabled(
+            unsupported = self._is_reasoning_effort_level_explicitly_disabled(
                 model, effective_effort
-            ):
-                if litellm.drop_params or drop_params:
-                    non_default_params.pop("reasoning_effort", None)
-                    optional_params.pop("reasoning_effort", None)
-                else:
-                    raise litellm.utils.UnsupportedParamsError(
-                        message=(
-                            f"reasoning_effort={effective_effort} is not supported for this model."
-                        ),
-                        status_code=400,
-                    )
+            )
+        else:
+            return effective_effort
+
+        if unsupported:
+            if litellm.drop_params or drop_params:
+                non_default_params.pop("reasoning_effort", None)
+                optional_params.pop("reasoning_effort", None)
+            else:
+                raise litellm.utils.UnsupportedParamsError(
+                    message=(
+                        f"reasoning_effort={effective_effort} is not supported for this model."
+                    ),
+                    status_code=400,
+                )
+        return effective_effort
+
+    def map_openai_params(
+        self,
+        non_default_params: dict,
+        optional_params: dict,
+        model: str,
+        drop_params: bool,
+    ) -> dict:
+        if self.is_model_gpt_5_search_model(model):
+            if "max_tokens" in non_default_params:
+                optional_params["max_completion_tokens"] = non_default_params.pop(
+                    "max_tokens"
+                )
+            return super()._map_openai_params(
+                non_default_params=non_default_params,
+                optional_params=optional_params,
+                model=model,
+                drop_params=drop_params,
+            )
+
+        effective_effort = self._normalize_and_validate_reasoning_effort(
+            non_default_params=non_default_params,
+            optional_params=optional_params,
+            model=model,
+            drop_params=drop_params,
+        )
 
         ################################################################
         # max_tokens is not supported for gpt-5 models on OpenAI API

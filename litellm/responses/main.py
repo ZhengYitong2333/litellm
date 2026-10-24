@@ -768,6 +768,37 @@ def _resolve_model_provider_for_responses(
     return model, custom_llm_provider
 
 
+def _resolve_responses_routing(
+    model: str,
+    custom_llm_provider: Optional[str],
+    litellm_params: GenericLiteLLMParams,
+    use_chat_completions_api: bool,
+    tools: Optional[Iterable[ToolParam]],
+    stream: Optional[bool],
+    kwargs: Dict[str, Any],
+    local_vars: Dict[str, Any],
+) -> tuple[str, Optional[str], bool]:
+    """Normalize the model name and decide whether to route via the chat bridge."""
+    model, from_chat_completions_prefix = (
+        _normalize_openai_chat_completions_responses_model(model)
+    )
+    local_vars["model"] = model
+    use_chat_completions_api = use_chat_completions_api or from_chat_completions_prefix
+    api_base = str(litellm_params.api_base or kwargs.get("api_base") or "")
+    if _should_force_responses_to_chat_bridge(
+        api_base=api_base, model=model, tools=tools, stream=stream
+    ):
+        use_chat_completions_api = True
+
+    model, custom_llm_provider = _resolve_model_provider_for_responses(
+        model=model,
+        custom_llm_provider=custom_llm_provider,
+        litellm_params=litellm_params,
+        local_vars=local_vars,
+    )
+    return model, custom_llm_provider, use_chat_completions_api
+
+
 def _apply_managed_file_id_mapping(
     input: Union[str, ResponseInputParam],
     tools: Optional[Iterable[ToolParam]],
@@ -1043,25 +1074,17 @@ def responses(
                 mock_response=litellm_params.mock_response
             )
 
-        _stripped_model, _from_chat_completions_prefix = (
-            _normalize_openai_chat_completions_responses_model(model)
-        )
-        model = _stripped_model
-        local_vars["model"] = model
-        use_chat_completions_api = (
-            use_chat_completions_api or _from_chat_completions_prefix
-        )
-        _api_base = str(litellm_params.api_base or kwargs.get("api_base") or "")
-        if _should_force_responses_to_chat_bridge(
-            api_base=_api_base, model=model, tools=tools, stream=stream
-        ):
-            use_chat_completions_api = True
-
-        model, custom_llm_provider = _resolve_model_provider_for_responses(
-            model=model,
-            custom_llm_provider=custom_llm_provider,
-            litellm_params=litellm_params,
-            local_vars=local_vars,
+        model, custom_llm_provider, use_chat_completions_api = (
+            _resolve_responses_routing(
+                model=model,
+                custom_llm_provider=custom_llm_provider,
+                litellm_params=litellm_params,
+                use_chat_completions_api=use_chat_completions_api,
+                tools=tools,
+                stream=stream,
+                kwargs=kwargs,
+                local_vars=local_vars,
+            )
         )
 
         #########################################################

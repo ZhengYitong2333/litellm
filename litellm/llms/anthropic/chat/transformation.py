@@ -2050,7 +2050,7 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
                 break
         return headers
 
-    def transform_request(
+    def transform_request(  # noqa: PLR0915
         self,
         model: str,
         messages: List[AllMessageValues],

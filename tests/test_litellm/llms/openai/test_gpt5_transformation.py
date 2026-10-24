@@ -454,6 +454,18 @@ def test_gpt5_2_temperature_with_reasoning_effort_none(config: OpenAIConfig):
         assert params["reasoning_effort"] == "none"
 
 
+def test_gpt5_5_drops_temperature_with_drop_params(
+    gpt5_config: OpenAIGPT5Config,
+):
+    params = gpt5_config.map_openai_params(
+        non_default_params={"temperature": 0.2},
+        optional_params={},
+        model="gpt-5.5",
+        drop_params=True,
+    )
+    assert "temperature" not in params
+
+
 def test_gpt5_4_allows_reasoning_effort_xhigh(config: OpenAIConfig):
     params = config.map_openai_params(
         non_default_params={"reasoning_effort": "xhigh"},

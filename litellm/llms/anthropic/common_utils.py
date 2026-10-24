@@ -4,7 +4,6 @@ This file contains common utils for anthropic calls.
 
 import base64
 import binascii
-import copy
 from typing import Any, Dict, List, Optional, Union
 
 import httpx
