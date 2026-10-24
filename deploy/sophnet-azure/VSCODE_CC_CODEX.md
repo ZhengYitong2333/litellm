@@ -138,7 +138,7 @@ curl -s http://localhost:4000/v1/messages \
   -H "Authorization: Bearer sk-litellm-sophnet-azure-local" \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
-  -d '{"model":"sophnet-claude-opus-4-7","max_tokens":16,"messages":[{"role":"user","content":"OK"}]}'
+  -d '{"model":"sophnet-claude-opus-4-8","max_tokens":16,"messages":[{"role":"user","content":"OK"}]}'
 
 # Codex 通路 (/v1/responses)
 curl -s http://localhost:4000/v1/responses \
@@ -235,7 +235,7 @@ Proxy 在 `config.yaml` 中注册的 **`model_name`**（客户端填写的名字
 
 | 别名 | 上游 | 推荐 | 说明 |
 |------|------|------|------|
-| `sophnet-claude-opus-4-7` | Sophnet Anthropic | ⭐ **Sonnet 默认** | 原生 Anthropic 通道 |
+| `sophnet-claude-opus-4-8` | Sophnet Anthropic | ⭐ **Sonnet 默认** | 原生 Anthropic 通道 |
 | `sophnet-gpt-5.5` | Sophnet OpenAI 兼容 | ⭐ **Opus 推荐** | 规划 / 复杂推理 |
 | `deepseek-v4-flash` | DeepSeek 官方 | ⭐ **Haiku 推荐** | 快、便宜，thinking |
 | `deepseek-v4-pro` | DeepSeek 官方 | 高质量 | 1M 上下文 |
@@ -254,7 +254,7 @@ Proxy 在 `config.yaml` 中注册的 **`model_name`**（客户端填写的名字
 |------|------|------|------|
 | `sophnet-gpt-5.5` | Sophnet | ⭐ **默认推荐** | Select Model 当前默认 |
 | `sophnet-claude-opus-4-8` | Sophnet Anthropic | 主模型 | 原生 Anthropic 通道 |
-| `sophnet-claude-opus-4-7` | Sophnet Anthropic | 主模型 | 原生 Anthropic 通道 |
+| `sophnet-claude-opus-4-8` | Sophnet Anthropic | 主模型 | 原生 Anthropic 通道 |
 | `deepseek-v4-pro` | DeepSeek 官方 | 高质量 | 1M 上下文，thinking 默认开启 |
 | `deepseek-v4-flash` | DeepSeek 官方 | 极速 | 快、便宜，已验证 Codex 通路 |
 | `sophnet-glm-5.3` | Sophnet | 轻量 | GLM 5.3，经 chat bridge |
@@ -284,10 +284,12 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 
 | 档位 | LiteLLM 别名 | 配置方式 |
 |------|--------------|----------|
-| Sonnet | `sophnet-claude-opus-4-7` | `ANTHROPIC_DEFAULT_SONNET_MODEL` |
+| Sonnet | `sophnet-claude-opus-4-8` | `ANTHROPIC_DEFAULT_SONNET_MODEL` |
 | Opus | `sophnet-gpt-5.5` | `ANTHROPIC_DEFAULT_OPUS_MODEL` |
 | Haiku | `deepseek-v4-flash` | `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
 | **GLM 5.3** | `sophnet-glm-5.3` | `ANTHROPIC_CUSTOM_MODEL_OPTION`（第 4 项） |
+
+> 此配置中的 Sonnet 是 Claude Code 的选项名，实际路由到 Claude Opus 4.8。
 
 > Claude Code 的 `/model` 选单只有 **Sonnet / Opus / Haiku + 1 个自定义项** 共 4 个选项。GLM 5.3 必须通过 `ANTHROPIC_CUSTOM_MODEL_OPTION` 添加；`availableModels` 填具体 model id 会因去重导致选单异常。
 
@@ -295,7 +297,7 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 
 | CC 档位 | LiteLLM 别名 | 用途 |
 |---------|--------------|------|
-| Sonnet | `sophnet-claude-opus-4-7` | 日常编码主模型 |
+| Sonnet | `sophnet-claude-opus-4-8` | 日常编码主模型 |
 | Opus | `sophnet-gpt-5.5` | 规划、复杂任务 |
 | Haiku | `deepseek-v4-flash` | 轻量、快速 |
 | GLM 5.3 | `sophnet-glm-5.3` | 轻量中文 / 低成本 |
@@ -308,13 +310,13 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 ```json
 {
   "claudeCode.disableLoginPrompt": true,
-  "claudeCode.selectedModel": "sophnet-claude-opus-4-7",
+  "claudeCode.selectedModel": "sophnet-claude-opus-4-8",
   "claudeCode.environmentVariables": [
     { "name": "LITELLM_PROXY_URL", "value": "http://localhost:4000" },
     { "name": "LITELLM_PROXY_API_KEY", "value": "sk-litellm-sophnet-azure-local" },
     { "name": "ANTHROPIC_BASE_URL", "value": "http://localhost:4000" },
     { "name": "ANTHROPIC_AUTH_TOKEN", "value": "sk-litellm-sophnet-azure-local" },
-    { "name": "ANTHROPIC_DEFAULT_SONNET_MODEL", "value": "sophnet-claude-opus-4-7" },
+    { "name": "ANTHROPIC_DEFAULT_SONNET_MODEL", "value": "sophnet-claude-opus-4-8" },
     { "name": "ANTHROPIC_DEFAULT_OPUS_MODEL", "value": "sophnet-gpt-5.5" },
     { "name": "ANTHROPIC_DEFAULT_HAIKU_MODEL", "value": "deepseek-v4-flash" },
     { "name": "ANTHROPIC_CUSTOM_MODEL_OPTION", "value": "sophnet-glm-5.3" },
@@ -333,7 +335,7 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:4000",
     "ANTHROPIC_AUTH_TOKEN": "sk-litellm-sophnet-azure-local",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "sophnet-claude-opus-4-7",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "sophnet-claude-opus-4-8",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "sophnet-gpt-5.5",
     "ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION": "规划 · Sophnet GPT-5.5",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
@@ -369,7 +371,7 @@ Claude Code 走 **Anthropic Messages API**（`/v1/messages`）。LiteLLM 会把�
 /model sophnet-gpt-5.5          # Opus
 /model deepseek-v4-flash      # Haiku
 /model sophnet-glm-5.3        # GLM 5.3（或选单第 4 项）
-/model sophnet-claude-opus-4-7
+/model sophnet-claude-opus-4-8
 ```
 
 或在设置里改 `claudeCode.selectedModel`。
@@ -441,7 +443,7 @@ experimental_bearer_token = "sk-litellm-sophnet-azure-local"
 |------|------|
 | `sophnet-gpt-5.5` | **默认** |
 | `sophnet-claude-opus-4-8` | 主模型 |
-| `sophnet-claude-opus-4-7` | 主模型 |
+| `sophnet-claude-opus-4-8` | 主模型 |
 | `deepseek-v4-pro` | 推理（DeepSeek 官方） |
 | `deepseek-v4-flash` | 极速（DeepSeek 官方） |
 | `sophnet-glm-5.3` | 轻量 |
@@ -543,7 +545,7 @@ export OPENAI_API_KEY="sk-litellm-sophnet-azure-local"
 ```
 sophnet-gpt-5.5              ← 默认
 sophnet-claude-opus-4-8
-sophnet-claude-opus-4-7
+sophnet-claude-opus-4-8
 deepseek-v4-pro
 deepseek-v4-flash
 sophnet-glm-5.3
@@ -600,7 +602,7 @@ codex --model deepseek-v4-flash "Say OK"
 
 | 工具 | 协议 | Base URL | 认证 | 模型名示例 |
 |------|------|----------|------|------------|
-| Claude Code | `/v1/messages` | `http://localhost:4000` | `ANTHROPIC_AUTH_TOKEN` = master key | `sophnet-claude-opus-4-7` |
+| Claude Code | `/v1/messages` | `http://localhost:4000` | `ANTHROPIC_AUTH_TOKEN` = master key | `sophnet-claude-opus-4-8` |
 | Codex | `/v1/responses` | `http://localhost:4000/v1` | `OPENAI_API_KEY` = master key | `sophnet-gpt-5.5`（默认） |
 
 ---

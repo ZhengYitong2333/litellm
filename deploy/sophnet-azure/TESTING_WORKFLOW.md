@@ -84,7 +84,7 @@ curl -s http://localhost:4000/v1/messages \
   -H "Authorization: Bearer sk-litellm-sophnet-azure-local" \
   -H "Content-Type: application/json" \
   -H "anthropic-version: 2023-06-01" \
-  -d '{"model":"sophnet-claude-opus-4-7","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"web_search_20250305","name":"web_search_20250305","max_uses":1}]}'
+  -d '{"model":"sophnet-claude-opus-4-8","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"web_search_20250305","name":"web_search_20250305","max_uses":1}]}'
 ```
 
 ## 4. 更新测试矩阵
@@ -110,7 +110,8 @@ curl -s http://localhost:4000/v1/messages \
 
 ### quick tier
 
-- `chat.basic.*` — Key、路由、模型别名、基础连通
+- `chat.basic.*` — Key、路由、模型别名、基础连通；禁用 fallback 并检查最终回答，reasoning 内容不能代替回答
+- `tokens.anthropic.tool_reference` / `tokens.anthropic.image` — Anthropic 工具引用和图片的本地 token 计数回归
 - `responses.gpt55.native` — GPT-5.5 必须走原生 `/v1/responses`
 - `messages.claude.basic` — Anthropic 原生 messages
 - `messages.claude.thinking` — Extended thinking

@@ -53,12 +53,12 @@ CHAT_MODELS = [
     "sophnet-deepseekv4-pro",
     "sophnet-deepseek-v4-flash-vision-exp",
     "sophnet-minimax-m3",
-    "sophnet-claude-opus-4-7",
+    "sophnet-claude-opus-4-8",
     "deepseek-v4-pro",
     "deepseek-v4-flash",
 ]
 
-CLAUDE = "sophnet-claude-opus-4-7"
+CLAUDE = "sophnet-claude-opus-4-8"
 GLM = "sophnet-glm-5.3"
 KIMI = "sophnet-kimi-k3"
 GPT55 = "sophnet-gpt-5.5"
@@ -273,13 +273,20 @@ def case_chat_basic(model: str) -> dict:
     payload: dict = {
         "model": model,
         "messages": [{"role": "user", "content": "Reply with exactly one word: OK"}],
-        "max_tokens": 256 if model == KIMI else 32,
+        "max_tokens": 256,
+        "disable_fallbacks": True,
     }
     if not model.startswith("sophnet-gpt"):
         if model not in {CLAUDE, KIMI}:
             payload["temperature"] = 0
     r = post("/v1/chat/completions", payload, retries=1)
     if r.get("ok"):
+        choices = r["body"].get("choices") or []
+        content = choices[0].get("message", {}).get("content") if choices else None
+        if not isinstance(content, str) or not content.strip():
+            r["ok"] = False
+            r["error"] = "Expected a non-empty final answer, not only reasoning content"
+            return r
         if model == KIMI and r["body"].get("model") != KIMI:
             r["ok"] = False
             r["error"] = f"Kimi request fell back to {r['body'].get('model')}"
@@ -287,6 +294,21 @@ def case_chat_basic(model: str) -> dict:
         r["preview"] = _chat_text(r["body"])
     elif skip := _maybe_skip_upstream(r):
         return skip
+    return r
+
+
+def case_anthropic_token_counter(content: list) -> dict:
+    r = post(
+        "/utils/token_counter",
+        {"model": GPT55, "messages": [{"role": "user", "content": content}]},
+    )
+    if r.get("ok"):
+        tokens = r["body"].get("total_tokens")
+        if not isinstance(tokens, int) or tokens <= 0:
+            r["ok"] = False
+            r["error"] = f"Expected a positive token count, got {tokens}"
+        else:
+            r["preview"] = f"total_tokens={tokens}"
     return r
 
 
@@ -413,20 +435,8 @@ def case_messages_web_search_tool() -> dict:
     if r.get("ok"):
         r["preview"] = _messages_preview(r["body"])
         return r
-    err = r.get("error") or ""
-    # Pass if LiteLLM normalized name (no Sophnet name validation error).
-    if (
-        "Input should be 'web_search'" not in err
-        and "web_search_20250305.name" not in err
-    ):
-        return {
-            "ok": True,
-            "skip": True,
-            "preview": "upstream rejected tool but name sanitize ok",
-            "latency_s": r.get("latency_s"),
-            "status": r.get("status"),
-            "error": err[:200],
-        }
+    if skip := _maybe_skip_upstream(r, label="web_search"):
+        return skip
     return r
 
 
@@ -480,6 +490,14 @@ def case_messages_invalid_thinking_history() -> dict:
 
 
 def case_messages_redacted_history() -> dict:
+    counter = case_anthropic_token_counter(
+        [
+            {"type": "text", "text": "Hi"},
+            {"type": "redacted_thinking", "data": "bad-data!!!"},
+        ]
+    )
+    if not counter.get("ok"):
+        return counter
     r = post(
         "/v1/messages",
         {
@@ -665,9 +683,9 @@ def case_burst(model: str, n: int = 3) -> dict:
     if model == GPT55:
         runner: Callable[[], dict] = case_responses_gpt55
     elif model == CLAUDE:
-        runner = lambda: case_messages_basic(CLAUDE)
+        runner = functools.partial(case_messages_basic, CLAUDE)
     else:
-        runner = lambda: case_chat_basic(model)
+        runner = functools.partial(case_chat_basic, model)
 
     def one() -> bool:
         return bool(runner().get("ok"))
@@ -882,6 +900,39 @@ def build_cases() -> List[Case]:
 
     cases.extend(
         [
+            Case(
+                id="tokens.anthropic.tool_reference",
+                tier="quick",
+                why="Nested tool_reference must not abort router token pre-checks",
+                fn=lambda: case_anthropic_token_counter(
+                    [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "search_1",
+                            "content": [
+                                {"type": "tool_reference", "tool_name": "read_file"}
+                            ],
+                        }
+                    ]
+                ),
+            ),
+            Case(
+                id="tokens.anthropic.image",
+                tier="quick",
+                why="Anthropic image source must be counted without tokenizing base64",
+                fn=lambda: case_anthropic_token_counter(
+                    [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN9kAAAAASUVORK5CYII=",
+                            },
+                        }
+                    ]
+                ),
+            ),
             Case(
                 id="responses.gpt55.native",
                 tier="quick",
@@ -1354,7 +1405,7 @@ def main() -> int:
 
     if args.list:
         for c in build_cases():
-            print(f"{c.tier:6} {c.expect:4} {c.id:40}  {c.why}")
+            sys.stdout.write(f"{c.tier:6} {c.expect:4} {c.id:40}  {c.why}\n")
         return 0
 
     tiers: Set[Tier] = {"quick"}
@@ -1371,13 +1422,15 @@ def main() -> int:
     try:
         ensure_proxy_ready()
     except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"error": f"proxy not ready: {exc}"}, indent=2))
+        sys.stdout.write(
+            json.dumps({"error": f"proxy not ready: {exc}"}, indent=2) + "\n"
+        )
         return 2
 
     cases = filter_tier(build_cases(), tiers)
     results = run_cases_parallel(cases)
 
-    passed = sum(1 for r in results if r["passed"])
+    passed = sum(1 for r in results if r["passed"] and r.get("status") != "skip")
     failed = [r for r in results if not r["passed"]]
     skipped = sum(1 for r in results if r.get("status") == "skip")
 
@@ -1394,17 +1447,13 @@ def main() -> int:
         },
         "results": results,
     }
-    print(json.dumps(report, indent=2, ensure_ascii=False))
-    print(
-        f"\n{passed}/{len(results)} passed ({skipped} skipped)",
-        file=sys.stderr,
-    )
+    sys.stdout.write(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+    sys.stderr.write(f"\n{passed}/{len(results)} passed ({skipped} skipped)\n")
     if failed:
-        print("\nFAILED:", file=sys.stderr)
+        sys.stderr.write("\nFAILED:\n")
         for row in failed:
-            print(
-                f"  - {row['id']}: {row.get('error', row.get('preview', ''))[:200]}",
-                file=sys.stderr,
+            sys.stderr.write(
+                f"  - {row['id']}: {row.get('error', row.get('preview', ''))[:200]}\n"
             )
         return 1
     return 0
