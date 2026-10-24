@@ -1,8 +1,44 @@
 import os
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 import litellm
+from litellm.types.llms.anthropic import UsageDelta
 from litellm.types.utils import ModelInfo
+
+
+def _usage_field(usage: Any, name: str) -> Any:
+    return usage.get(name) if isinstance(usage, Mapping) else getattr(usage, name, None)
+
+
+def _usage_tokens(usage: Any, name: str) -> int:
+    value = _usage_field(usage, name)
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
+def translate_openai_usage_to_anthropic(usage: Any) -> UsageDelta:
+    details = _usage_field(usage, "prompt_tokens_details") or _usage_field(
+        usage, "input_tokens_details"
+    )
+    cached = (
+        _usage_tokens(details, "cached_tokens")
+        or _usage_tokens(usage, "_cache_read_input_tokens")
+        or _usage_tokens(usage, "cache_read_input_tokens")
+    )
+    created = (
+        _usage_tokens(details, "cache_creation_tokens")
+        or _usage_tokens(usage, "_cache_creation_input_tokens")
+        or _usage_tokens(usage, "cache_creation_input_tokens")
+    )
+    total_input = _usage_tokens(usage, "prompt_tokens") or _usage_tokens(
+        usage, "input_tokens"
+    )
+    return UsageDelta(
+        input_tokens=max(0, total_input - cached - created),
+        output_tokens=_usage_tokens(usage, "completion_tokens")
+        or _usage_tokens(usage, "output_tokens"),
+        cache_read_input_tokens=cached,
+        cache_creation_input_tokens=created,
+    )
 
 
 def uses_azure_openai_api_base(api_base: Optional[str]) -> bool:

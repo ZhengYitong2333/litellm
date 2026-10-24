@@ -25,6 +25,7 @@ from litellm.types.utils import (
     Delta,
     Function,
     StreamingChoices,
+    Usage,
 )
 
 
@@ -425,3 +426,100 @@ def test_should_start_new_content_block_with_empty_choices():
     empty_chunk = MagicMock()
     empty_chunk.choices = []
     assert wrapper._should_start_new_content_block(empty_chunk) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize(
+    "usage_layout", ["finish", "empty_choices", "trailing_choices"]
+)
+@pytest.mark.parametrize("cached,created", [(800, 0), (0, 200), (800, 150)])
+async def test_stream_preserves_cache_usage(async_mode, usage_layout, cached, created):
+    usage = Usage(
+        prompt_tokens=1000,
+        completion_tokens=7,
+        total_tokens=1007,
+        prompt_tokens_details={
+            "cached_tokens": cached,
+            "cache_creation_tokens": created,
+        },
+    )
+    chunks = [
+        _make_chunk(Delta(content="OK", role="assistant")),
+        _make_chunk(Delta(content=None, role="assistant"), "stop"),
+    ]
+    if usage_layout == "finish":
+        chunks[-1].usage = usage
+    else:
+        chunk = _make_chunk(Delta(content=None, role="assistant"))
+        if usage_layout == "empty_choices":
+            chunk.choices = []
+        chunk.usage = usage
+        chunks.append(chunk)
+
+    async def stream():
+        for chunk in chunks:
+            yield chunk
+
+    wrapper = AnthropicStreamWrapper(
+        completion_stream=stream() if async_mode else iter(chunks), model="test-model"
+    )
+    events = (
+        await _collect_events_async(wrapper)
+        if async_mode
+        else _collect_events_sync(wrapper)
+    )
+    deltas = [event for event in events if event.get("type") == "message_delta"]
+    assert len(deltas) == 1
+    assert deltas[0]["usage"]["input_tokens"] == 1000 - cached - created
+    assert deltas[0]["usage"].get("cache_read_input_tokens", 0) == cached
+    assert deltas[0]["usage"].get("cache_creation_input_tokens", 0) == created
+    assert deltas[0]["usage"]["output_tokens"] == 7
+    assert events[-1]["type"] == "message_stop"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize("native_thinking_block", [False, True])
+async def test_reasoning_to_text_preserves_first_text_chunk(
+    async_mode, native_thinking_block
+):
+    thinking_delta = (
+        Delta(
+            thinking_blocks=[
+                {"type": "thinking", "thinking": "Reason", "signature": ""}
+            ]
+        )
+        if native_thinking_block
+        else Delta(reasoning_content="Reason")
+    )
+    chunks = [
+        _make_chunk(thinking_delta),
+        _make_chunk(Delta(content="OK")),
+        _make_chunk(Delta(content=None), "stop"),
+    ]
+
+    async def stream():
+        for chunk in chunks:
+            yield chunk
+
+    wrapper = AnthropicStreamWrapper(
+        completion_stream=stream() if async_mode else iter(chunks), model="test-model"
+    )
+    events = (
+        await _collect_events_async(wrapper)
+        if async_mode
+        else _collect_events_sync(wrapper)
+    )
+    text, thinking = "", ""
+    for event in events:
+        if event.get("type") == "content_block_start":
+            block = event["content_block"]
+            text += block.get("text", "")
+            thinking += block.get("thinking", "")
+        elif event.get("type") == "content_block_delta":
+            delta = event["delta"]
+            text += delta.get("text", "")
+            thinking += delta.get("thinking", "")
+    assert text == "OK"
+    assert thinking == "Reason"

@@ -9,6 +9,8 @@ import sys
 from typing import Any, Dict, List
 from unittest.mock import MagicMock
 
+import pytest
+
 sys.path.insert(0, os.path.abspath("../../../../../../.."))
 
 from litellm.llms.anthropic.experimental_pass_through.responses_adapters.transformation import (
@@ -1110,3 +1112,53 @@ class TestTranslateResponse:
         assert "text" in types
         assert "tool_use" in types
         assert result["stop_reason"] == "tool_use"
+
+
+@pytest.mark.parametrize("as_dict", [False, True])
+@pytest.mark.parametrize("event_type", ["response.created", "response.completed"])
+def test_responses_stream_preserves_cache_usage(as_dict, event_type):
+    from types import SimpleNamespace
+
+    from litellm.llms.anthropic.experimental_pass_through.responses_adapters.streaming_iterator import (
+        AnthropicResponsesStreamWrapper,
+    )
+
+    usage = {
+        "input_tokens": 1000,
+        "output_tokens": 7,
+        "input_tokens_details": {"cached_tokens": 800},
+    }
+    response = {"status": "completed", "output": [], "usage": usage}
+    event = {"type": event_type, "response": response}
+    if not as_dict:
+        event = SimpleNamespace(
+            type=event_type,
+            response=SimpleNamespace(**{**response, "usage": SimpleNamespace(**usage)}),
+        )
+    wrapper = AnthropicResponsesStreamWrapper(responses_stream=None, model="test-model")
+    wrapper._process_event(event)
+    chunk = wrapper._chunk_queue.popleft()
+    actual = (
+        chunk["message"]["usage"]
+        if event_type == "response.created"
+        else chunk["usage"]
+    )
+    assert actual["input_tokens"] == 200
+    assert actual["cache_read_input_tokens"] == 800
+    assert actual["cache_creation_input_tokens"] == 0
+    assert actual["output_tokens"] == 7
+
+
+def test_responses_nonstream_preserves_cached_tokens():
+    from types import SimpleNamespace
+
+    response = _make_mock_response(output=[_make_output_message(["OK"])])
+    response.usage = SimpleNamespace(
+        input_tokens=1000,
+        output_tokens=7,
+        input_tokens_details=SimpleNamespace(cached_tokens=800),
+    )
+    result = _ADAPTER.translate_response(response)
+    assert result["usage"]["input_tokens"] == 200
+    assert result["usage"]["cache_read_input_tokens"] == 800
+    assert result["usage"]["output_tokens"] == 7

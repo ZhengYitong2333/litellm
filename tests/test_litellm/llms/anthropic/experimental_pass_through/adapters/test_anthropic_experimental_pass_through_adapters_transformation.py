@@ -2167,6 +2167,23 @@ def test_translate_openai_response_to_anthropic_cache_tokens_from_prompt_tokens_
 # =====================================================================
 
 
+def test_translate_openai_response_cache_creation_not_double_counted():
+    response = ModelResponse(
+        choices=[Choices(index=0, finish_reason="stop", message=Message(content="OK"))],
+        usage=Usage(
+            prompt_tokens=1000,
+            completion_tokens=7,
+            prompt_tokens_details={"cached_tokens": 800, "cache_creation_tokens": 150},
+        ),
+    )
+    result = LiteLLMAnthropicMessagesAdapter().translate_openai_response_to_anthropic(
+        response=response, tool_name_mapping=None
+    )
+    assert result["usage"]["input_tokens"] == 50
+    assert result["usage"]["cache_read_input_tokens"] == 800
+    assert result["usage"]["cache_creation_input_tokens"] == 150
+
+
 def test_is_web_search_tool():
     """Test detection of Anthropic web search tools."""
     adapter = LiteLLMAnthropicMessagesAdapter()
@@ -2628,7 +2645,6 @@ def test_translate_anthropic_tool_choice_none():
 
     result = adapter.translate_anthropic_tool_choice_to_openai({"type": "none"})
     assert result == "none"
-
 
 
 def test_translate_anthropic_to_openai_inserts_placeholder_for_missing_tool_result():

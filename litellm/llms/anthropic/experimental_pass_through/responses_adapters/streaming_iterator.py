@@ -7,6 +7,9 @@ from typing import Any, AsyncIterator, Dict
 
 from litellm import verbose_logger
 from litellm._uuid import uuid
+from litellm.llms.anthropic.experimental_pass_through.utils import (
+    translate_openai_usage_to_anthropic,
+)
 
 
 class AnthropicResponsesStreamWrapper:
@@ -42,7 +45,7 @@ class AnthropicResponsesStreamWrapper:
         self._sent_message_stop = False
         self._chunk_queue: deque = deque()
 
-    def _make_message_start(self) -> Dict[str, Any]:
+    def _make_message_start(self, usage: Any = None) -> Dict[str, Any]:
         return {
             "type": "message_start",
             "message": {
@@ -53,12 +56,7 @@ class AnthropicResponsesStreamWrapper:
                 "model": self.model,
                 "stop_reason": None,
                 "stop_sequence": None,
-                "usage": {
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "cache_creation_input_tokens": 0,
-                    "cache_read_input_tokens": 0,
-                },
+                "usage": translate_openai_usage_to_anthropic(usage),
             },
         }
 
@@ -78,7 +76,17 @@ class AnthropicResponsesStreamWrapper:
         # ---- message_start ----
         if event_type == "response.created":
             self._sent_message_start = True
-            self._chunk_queue.append(self._make_message_start())
+            response = (
+                event.get("response")
+                if isinstance(event, dict)
+                else getattr(event, "response", None)
+            )
+            usage = (
+                response.get("usage")
+                if isinstance(response, dict)
+                else getattr(response, "usage", None)
+            )
+            self._chunk_queue.append(self._make_message_start(usage))
             return
 
         # ---- content_block_start for a new output message item ----
@@ -246,32 +254,28 @@ class AnthropicResponsesStreamWrapper:
                 event.get("response") if isinstance(event, dict) else None
             )
             stop_reason = "end_turn"
-            input_tokens = 0
-            output_tokens = 0
-            cache_creation_tokens = 0
-            cache_read_tokens = 0
-
+            usage = None
             if response_obj is not None:
-                status = getattr(response_obj, "status", None)
+                status = (
+                    response_obj.get("status")
+                    if isinstance(response_obj, dict)
+                    else getattr(response_obj, "status", None)
+                )
                 if status == "incomplete":
                     stop_reason = "max_tokens"
-                usage = getattr(response_obj, "usage", None)
-                if usage is not None:
-                    input_tokens = getattr(usage, "input_tokens", 0) or 0
-                    output_tokens = getattr(usage, "output_tokens", 0) or 0
-                    cache_creation_tokens = getattr(usage, "input_tokens_details", None)  # type: ignore[assignment]
-                    cache_read_tokens = getattr(usage, "output_tokens_details", None)  # type: ignore[assignment]
-                    # Prefer direct cache fields if present
-                    cache_creation_tokens = int(
-                        getattr(usage, "cache_creation_input_tokens", 0) or 0
-                    )
-                    cache_read_tokens = int(
-                        getattr(usage, "cache_read_input_tokens", 0) or 0
-                    )
+                usage = (
+                    response_obj.get("usage")
+                    if isinstance(response_obj, dict)
+                    else getattr(response_obj, "usage", None)
+                )
 
             # Check if tool_use was in the output to override stop_reason
             if response_obj is not None:
-                output = getattr(response_obj, "output", []) or []
+                output = (
+                    response_obj.get("output", [])
+                    if isinstance(response_obj, dict)
+                    else getattr(response_obj, "output", [])
+                ) or []
                 for out_item in output:
                     out_type = getattr(out_item, "type", None) or (
                         out_item.get("type") if isinstance(out_item, dict) else None
@@ -280,14 +284,7 @@ class AnthropicResponsesStreamWrapper:
                         stop_reason = "tool_use"
                         break
 
-            usage_delta: Dict[str, Any] = {
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-            }
-            if cache_creation_tokens:
-                usage_delta["cache_creation_input_tokens"] = cache_creation_tokens
-            if cache_read_tokens:
-                usage_delta["cache_read_input_tokens"] = cache_read_tokens
+            usage_delta = translate_openai_usage_to_anthropic(usage)
 
             self._chunk_queue.append(
                 {

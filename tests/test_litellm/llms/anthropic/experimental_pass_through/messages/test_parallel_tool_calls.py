@@ -279,6 +279,7 @@ def test_anthropic_stream_wrapper_interleaved_tool_calls_and_text():
         "content_block_delta",  # "NY"}
         "content_block_stop",  # End of first tool_use content block
         "content_block_start",  # "The weather is nice today"
+        "content_block_delta",  # "The weather is nice today"
         "content_block_stop",
         "content_block_start",  # Start of second tool_use content block
         "content_block_delta",  # {"city":
@@ -289,6 +290,7 @@ def test_anthropic_stream_wrapper_interleaved_tool_calls_and_text():
         "content_block_delta",  # " CHI"}
         "content_block_stop",  # End of third tool_use content block
         "content_block_start",  # "The weather is not so nice today"
+        "content_block_delta",  # "The weather is not so nice today"
         "content_block_stop",
         "message_delta",  # Stop reason with merged usage
         "message_stop",  # Final message stop
@@ -307,3 +309,10 @@ def test_anthropic_stream_wrapper_interleaved_tool_calls_and_text():
                 get_weather_calls += 1
 
     assert get_weather_calls == 3
+
+    text = "".join(
+        chunk["delta"].get("text", "")
+        for chunk in chunks
+        if chunk.get("type") == "content_block_delta"
+    )
+    assert text == "The weather is nice today.The weather is not so nice today."

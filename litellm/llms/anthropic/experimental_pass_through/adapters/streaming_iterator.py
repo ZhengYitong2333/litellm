@@ -16,6 +16,9 @@ from typing import (
 
 from litellm._logging import verbose_logger
 from litellm._uuid import uuid
+from litellm.llms.anthropic.experimental_pass_through.utils import (
+    translate_openai_usage_to_anthropic,
+)
 from litellm.types.llms.anthropic import (
     AppliedEdit,
     CompactionBlock,
@@ -111,33 +114,7 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
         if "delta" not in merged_chunk:
             merged_chunk["delta"] = {}
 
-        uncached_input_tokens = chunk.usage.prompt_tokens or 0
-        if (
-            hasattr(chunk.usage, "prompt_tokens_details")
-            and chunk.usage.prompt_tokens_details
-        ):
-            cached_tokens = (
-                getattr(chunk.usage.prompt_tokens_details, "cached_tokens", 0) or 0
-            )
-            uncached_input_tokens -= cached_tokens
-
-        usage_dict: UsageDelta = {
-            "input_tokens": uncached_input_tokens,
-            "output_tokens": chunk.usage.completion_tokens or 0,
-        }
-        if (
-            hasattr(chunk.usage, "_cache_creation_input_tokens")
-            and chunk.usage._cache_creation_input_tokens > 0
-        ):
-            usage_dict["cache_creation_input_tokens"] = (
-                chunk.usage._cache_creation_input_tokens
-            )
-        if (
-            hasattr(chunk.usage, "_cache_read_input_tokens")
-            and chunk.usage._cache_read_input_tokens > 0
-        ):
-            usage_dict["cache_read_input_tokens"] = chunk.usage._cache_read_input_tokens
-        merged_chunk["usage"] = usage_dict
+        merged_chunk["usage"] = translate_openai_usage_to_anthropic(chunk.usage)
         if self.applied_edits and "context_management" not in merged_chunk:
             merged_chunk["context_management"] = ContextManagementResponse(
                 applied_edits=list(self.applied_edits)
@@ -377,14 +354,6 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                     continue
 
                 if should_start_new_block and not self.sent_content_block_finish:
-                    # Queue the sequence: content_block_stop -> content_block_start
-                    # For text blocks the trigger chunk is not emitted as a separate
-                    # delta because content_block_start carries the information.
-                    # For tool_use blocks we must also emit the trigger chunk's delta
-                    # when it carries input_json_delta data, because some providers
-                    # (e.g. xAI, Gemini) include tool arguments in the same streaming
-                    # chunk as the function name/id.
-
                     # 1. Stop current content block
                     self.chunk_queue.append(
                         {
@@ -402,15 +371,7 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                         }
                     )
 
-                    # 3. If the trigger chunk carries tool argument data, queue it
-                    # so the input_json_delta is not silently dropped.
-                    if (
-                        processed_chunk.get("type") == "content_block_delta"
-                        and isinstance(processed_chunk.get("delta"), dict)
-                        and processed_chunk["delta"].get("type") == "input_json_delta"
-                        and processed_chunk["delta"].get("partial_json")
-                    ):
-                        self.chunk_queue.append(processed_chunk)
+                    self._queue_initial_content_delta(processed_chunk)
 
                     self.sent_content_block_finish = False
                     return self.chunk_queue.popleft()
@@ -624,14 +585,6 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
 
                 if not self.queued_usage_chunk:
                     if should_start_new_block and not self.sent_content_block_finish:
-                        # Queue the sequence: content_block_stop -> content_block_start
-                        # For text blocks the trigger chunk is not emitted as a separate
-                        # delta because content_block_start carries the information.
-                        # For tool_use blocks we must also emit the trigger chunk's delta
-                        # when it carries input_json_delta data, because some providers
-                        # (e.g. xAI, Gemini) include tool arguments in the same streaming
-                        # chunk as the function name/id.
-
                         # 1. Stop current content block
                         self.chunk_queue.append(
                             {
@@ -647,16 +600,7 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
                             }
                         )
 
-                        # 3. If the trigger chunk carries tool argument data, queue it
-                        # so the input_json_delta is not silently dropped.
-                        if (
-                            processed_chunk.get("type") == "content_block_delta"
-                            and isinstance(processed_chunk.get("delta"), dict)
-                            and processed_chunk["delta"].get("type")
-                            == "input_json_delta"
-                            and processed_chunk["delta"].get("partial_json")
-                        ):
-                            self.chunk_queue.append(processed_chunk)
+                        self._queue_initial_content_delta(processed_chunk)
 
                         # Reset state for new block
                         self.sent_content_block_finish = False
@@ -823,43 +767,28 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
         ):
             return False
 
-        merged_chunk = self.holding_stop_reason_chunk.copy()
-        if "delta" not in merged_chunk:
-            merged_chunk["delta"] = {}
-
-        chunk_usage = chunk.usage  # type: ignore[attr-defined]
-        uncached_input_tokens = chunk_usage.prompt_tokens or 0
-        if (
-            hasattr(chunk_usage, "prompt_tokens_details")
-            and chunk_usage.prompt_tokens_details
-        ):
-            cached_tokens = (
-                getattr(chunk_usage.prompt_tokens_details, "cached_tokens", 0) or 0
-            )
-            uncached_input_tokens -= cached_tokens
-
-        usage_dict: UsageDelta = {
-            "input_tokens": uncached_input_tokens,
-            "output_tokens": chunk_usage.completion_tokens or 0,
-        }
-        if (
-            hasattr(chunk_usage, "_cache_creation_input_tokens")
-            and chunk_usage._cache_creation_input_tokens > 0
-        ):
-            usage_dict["cache_creation_input_tokens"] = (
-                chunk_usage._cache_creation_input_tokens
-            )
-        if (
-            hasattr(chunk_usage, "_cache_read_input_tokens")
-            and chunk_usage._cache_read_input_tokens > 0
-        ):
-            usage_dict["cache_read_input_tokens"] = chunk_usage._cache_read_input_tokens
-
-        merged_chunk["usage"] = usage_dict
+        merged_chunk = self._merge_usage_into_held_stop_reason_chunk(chunk)
         self.chunk_queue.append(merged_chunk)
         self.queued_usage_chunk = True
         self.holding_stop_reason_chunk = None
         return True
+
+    def _queue_initial_content_delta(self, chunk: Dict[str, Any]) -> None:
+        if chunk.get("type") != "content_block_delta":
+            return
+        delta = chunk.get("delta") or {}
+        field = {
+            "text_delta": "text",
+            "thinking_delta": "thinking",
+            "signature_delta": "signature",
+            "input_json_delta": "partial_json",
+        }.get(delta.get("type"))
+        if (
+            field
+            and delta.get(field)
+            and not self.current_content_block_start.get(field)
+        ):
+            self.chunk_queue.append(chunk)
 
     def _increment_content_block_index(self):
         self.current_content_block_index += 1

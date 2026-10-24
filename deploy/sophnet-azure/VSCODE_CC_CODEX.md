@@ -688,3 +688,23 @@ python3 test_corner_cases.py --quick 2>/dev/null | python3 -m json.tool
 - Claude Code 环境变量：https://code.claude.com/docs/en/env-vars
 - Codex 高级配置：https://developers.openai.com/codex/config-advanced
 - 本分支 Proxy 运维： [`.cursor/rules/sophnet-azure-proxy.mdc`](../../.cursor/rules/sophnet-azure-proxy.mdc)
+
+## OpenCode Go 的流式用量
+
+OpenCode v2 的客户端版本与推理 API 的 `/v1` 路径是不同概念。Go 已提供原生 Anthropic Messages 接口；Claude Code 使用 DeepSeek 时，可以让 LiteLLM 的公开别名走这条通道，以保留上游首包的输入与缓存用量。
+
+本地 `config.yaml` 中对应的最小配置如下，密钥仍从环境变量读取：
+
+```yaml
+- model_name: opencode-deepseek-v4.1-flash
+  litellm_params:
+    model: anthropic/deepseek-v4.1-flash
+    api_base: https://opencode.ai/inference/go/anthropic
+    api_key: os.environ/OPENCODE_API_KEY
+```
+
+`config.yaml` 是本地忽略文件，上述改动需要在各部署同步。参考 [OpenCode v2 的 Claude Code 接入文档](https://dev.opencode.ai/v2/docs/console/harnesses/claude-code/)。
+
+走 Chat Completions 或 Responses 转换的模型，上游可能只在结束时返回用量。此时 `message_start` 暂为零，最终 `message_delta` 应完整包含未缓存输入、缓存读取、缓存写入和输出 token。为获得首包准确数字而等待整个响应结束，会失去逐步输出的效果；转换层不这样处理。
+
+上下文输入量应计算为 `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`，不能只读取 `input_tokens`，也不能把整个会话累计输入当作当前上下文长度。状态栏的 `remaining_percentage` 表示剩余比例，`100%` 与用量 `0/0` 同时出现时，应先核对该轮请求是否已经收到有效 usage。

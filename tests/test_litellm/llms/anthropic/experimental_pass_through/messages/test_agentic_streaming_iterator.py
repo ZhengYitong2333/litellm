@@ -21,6 +21,23 @@ from litellm.llms.anthropic.experimental_pass_through.messages.agentic_streaming
     _handle_message_start,
     _parse_sse_events,
 )
+from litellm.llms.anthropic.experimental_pass_through.messages.fake_stream_iterator import (
+    FakeAnthropicMessagesStreamIterator,
+)
+
+
+def test_fake_stream_includes_known_cache_usage_in_message_start():
+    usage = {
+        "input_tokens": 15,
+        "output_tokens": 7,
+        "cache_creation_input_tokens": 150,
+        "cache_read_input_tokens": 800,
+    }
+    iterator = FakeAnthropicMessagesStreamIterator(
+        {"id": "msg_1", "model": "test-model", "content": [], "usage": usage}
+    )
+    first = json.loads(iterator.chunks[0].decode().split("data: ", 1)[1])
+    assert first["message"]["usage"] == {**usage, "output_tokens": 0}
 
 
 # ---------------------------------------------------------------------------

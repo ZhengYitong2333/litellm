@@ -159,6 +159,15 @@ class FakeAnthropicMessagesStreamIterator:
                 "usage": {
                     "input_tokens": usage.get("input_tokens", 0) if usage else 0,
                     "output_tokens": 0,
+                    **{
+                        key: usage[key]
+                        for key in (
+                            "cache_creation_input_tokens",
+                            "cache_read_input_tokens",
+                            "cache_creation",
+                        )
+                        if usage and key in usage
+                    },
                 },
             },
         }

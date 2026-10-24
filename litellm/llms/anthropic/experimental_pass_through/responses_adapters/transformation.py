@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Union, cast
 
 from litellm.llms.anthropic.experimental_pass_through.utils import (
     is_reasoning_auto_summary_enabled,
+    translate_openai_usage_to_anthropic,
 )
 from litellm.types.llms.anthropic import (
     AllAnthropicToolsValues,
@@ -526,12 +527,8 @@ class LiteLLMAnthropicToResponsesAPIAdapter:
 
         # usage
         raw_usage: Optional[ResponseAPIUsage] = response.usage
-        input_tokens = int(getattr(raw_usage, "input_tokens", 0) or 0)
-        output_tokens = int(getattr(raw_usage, "output_tokens", 0) or 0)
-
         anthropic_usage = AnthropicUsage(
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            **translate_openai_usage_to_anthropic(raw_usage),
         )
 
         return AnthropicMessagesResponse(

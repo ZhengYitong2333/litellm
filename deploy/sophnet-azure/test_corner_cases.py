@@ -166,12 +166,40 @@ def post(
                     for line in resp:
                         chunks.append(line.decode(errors="replace"))
                     raw = "".join(chunks)
+                    usage: Dict[str, Any] = {}
+                    initial_usage: Dict[str, Any] = {}
+                    text_parts: List[str] = []
+                    for line in chunks:
+                        if not line.startswith("data:"):
+                            continue
+                        try:
+                            event = json.loads(line[5:].strip())
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                        if not isinstance(event, dict):
+                            continue
+                        if event.get("type") == "message_start":
+                            usage.update(event.get("message", {}).get("usage") or {})
+                            initial_usage = dict(usage)
+                        elif event.get("type") == "message_delta":
+                            usage.update(event.get("usage") or {})
+                        elif event.get("type") == "content_block_start":
+                            block = event.get("content_block", {})
+                            if block.get("type") == "text":
+                                text_parts.append(block.get("text") or "")
+                        elif event.get("type") == "content_block_delta":
+                            delta = event.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                text_parts.append(delta.get("text") or "")
                     return {
                         "ok": True,
                         "status": resp.status,
                         "latency_s": round(time.perf_counter() - start, 2),
                         "stream_lines": len(chunks),
                         "preview": raw[:200],
+                        "usage": usage,
+                        "initial_usage": initial_usage,
+                        "text": "".join(text_parts),
                     }
                 raw = resp.read().decode(errors="replace")
                 body = json.loads(raw) if raw else {}
@@ -418,6 +446,82 @@ def case_messages_stream() -> dict:
             "latency_s": r["latency_s"],
             "status": r.get("status"),
         }
+    return r
+
+
+def case_messages_cached_stream_usage() -> dict:
+    reference = f"Cache usage regression {time.time_ns()}\n" + (
+        "Keep this stable reference unchanged and follow the final short instruction.\n"
+        * 250
+    )
+    totals = []
+    for _ in range(2):
+        r = post(
+            "/v1/messages",
+            {
+                "model": GLM,
+                "stream": True,
+                "max_tokens": 64,
+                "system": reference,
+                "messages": [{"role": "user", "content": "Reply only OK."}],
+                "disable_fallbacks": True,
+            },
+            headers=ANTHROPIC_HEADERS,
+            stream=True,
+        )
+        if not r.get("ok"):
+            return _maybe_skip_upstream(r, label="cached_stream_usage") or r
+        usage = r.get("usage", {})
+        total = sum(
+            usage.get(key, 0) or 0
+            for key in (
+                "input_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+            )
+        )
+        totals.append(total)
+    if totals[0] <= 0 or totals[1] < 0.95 * totals[0]:
+        r["ok"] = False
+        r["error"] = f"Input usage disappeared after cache reuse: {totals}"
+    r["preview"] = f"input totals={totals}; final usage={usage}"
+    return r
+
+
+def case_messages_reasoning_text(
+    model: str = "opencode-deepseek-v4.1-flash", require_initial_usage: bool = False
+) -> dict:
+    r = post(
+        "/v1/messages",
+        {
+            "model": model,
+            "stream": True,
+            "max_tokens": 256,
+            "messages": [{"role": "user", "content": "Reply only OK."}],
+            "disable_fallbacks": True,
+        },
+        headers=ANTHROPIC_HEADERS,
+        stream=True,
+    )
+    if r.get("ok") and not r.get("text", "").strip():
+        r["ok"] = False
+        r["error"] = "Reasoning stream lost the final text answer"
+    elif not r.get("ok"):
+        return _maybe_skip_upstream(r, label="reasoning_text") or r
+    if require_initial_usage:
+        initial_usage = r.get("initial_usage", {})
+        total = sum(
+            initial_usage.get(key, 0) or 0
+            for key in (
+                "input_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+            )
+        )
+        if total <= 0:
+            r["ok"] = False
+            r["error"] = "Native Anthropic message_start is missing input usage"
+    r["preview"] = f"text={r.get('text')!r}; usage={r.get('usage')}"
     return r
 
 
@@ -1012,6 +1116,33 @@ def build_cases() -> List[Case]:
                 retries=0,
             ),
         ]
+    )
+
+    cases.append(
+        Case(
+            id="messages.adapter.cached_stream_usage",
+            tier="full",
+            why="GLM cache hits lost cache_read_input_tokens in the final usage chunk",
+            fn=case_messages_cached_stream_usage,
+        )
+    )
+    cases.append(
+        Case(
+            id="messages.adapter.reasoning_text",
+            tier="full",
+            why="OpenCode DeepSeek final text disappeared when switching from reasoning",
+            fn=lambda: case_messages_reasoning_text(
+                "sophnet-deepseek-v4-flash-vision-exp"
+            ),
+        )
+    )
+    cases.append(
+        Case(
+            id="messages.opencode.native_usage",
+            tier="full",
+            why="OpenCode Go native Anthropic route must preserve initial input usage",
+            fn=lambda: case_messages_reasoning_text(require_initial_usage=True),
+        )
     )
 
     for model in CHAT_MODELS:

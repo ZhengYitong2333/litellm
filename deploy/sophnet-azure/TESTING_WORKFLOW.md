@@ -133,6 +133,9 @@ curl -s http://localhost:4000/v1/messages \
 
 ### full tier
 
+- `messages.adapter.cached_stream_usage` — 重复相同 GLM 上下文，检查缓存读取量没有在最终 usage 中丢失
+- `messages.adapter.reasoning_text` — 思考块切换到正文时，保留首个正文片段
+- `messages.opencode.native_usage` — OpenCode DeepSeek 原生 Anthropic 路由首包包含输入用量
 - `stream.chat.ttfb.*` — Chat 流式 TTFB
 - `messages.claude.stream` — Messages 流式
 - `adapter.gpt.thinking_tools` — GPT reasoning+tools 不挂起
