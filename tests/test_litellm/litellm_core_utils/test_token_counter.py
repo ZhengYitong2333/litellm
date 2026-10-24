@@ -203,9 +203,7 @@ def test_tokenizers():
         try:
             llama3_tokenizer = create_pretrained_tokenizer("Xenova/llama-3-tokenizer")
         except Exception as e:
-            pytest.skip(
-                f"custom tokenizer download failed (HF hub unreachable): {e}"
-            )
+            pytest.skip(f"custom tokenizer download failed (HF hub unreachable): {e}")
         llama3_tokens_2 = token_counter(
             custom_tokenizer=llama3_tokenizer, text=sample_text
         )
@@ -522,7 +520,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from litellm.utils import _select_tokenizer_helper, claude_json_str, encoding
-
 
 # Clear the cache at module load to ensure clean state
 _select_tokenizer_helper.cache_clear()
@@ -1010,3 +1007,117 @@ def test_token_counter_with_thinking_content():
     assert (
         tokens_no_thinking < 15
     ), f"Expected minimal token count for empty thinking block, got {tokens_no_thinking}"
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_token_counter_tool_reference_counts_tool_name(nested):
+    reference = {"type": "tool_reference", "tool_name": "read_project_file"}
+    text = {"type": "text", "text": "read_project_file"}
+
+    def messages(block):
+        content = [block]
+        if nested:
+            content = [
+                {"type": "tool_result", "tool_use_id": "search_1", "content": content}
+            ]
+        return [{"role": "user", "content": content}]
+
+    actual = token_counter_new(model="gpt-4o", messages=messages(reference))
+    expected = token_counter_new(model="gpt-4o", messages=messages(text))
+    assert actual == expected
+    assert actual > token_counter_new(
+        model="gpt-4o", messages=messages({"type": "text", "text": ""})
+    )
+
+
+@pytest.mark.parametrize("data", ["bad-data!!!", "a" * 4096])
+def test_token_counter_redacted_thinking_ignores_opaque_data(data):
+    text = {"type": "text", "text": "Hi"}
+    actual = token_counter_new(
+        model="gpt-4o",
+        messages=[
+            {
+                "role": "assistant",
+                "content": [text, {"type": "redacted_thinking", "data": data}],
+            }
+        ],
+    )
+    expected = token_counter_new(
+        model="gpt-4o", messages=[{"role": "assistant", "content": [text]}]
+    )
+    assert actual == expected
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("use_default", [False, True])
+@pytest.mark.parametrize(
+    "source,image_url",
+    [
+        (
+            {"type": "url", "url": "https://example.com/image.png"},
+            "https://example.com/image.png",
+        ),
+        (
+            {"type": "base64", "media_type": "image/png", "data": "a" * 4096},
+            "data:image/png;base64," + "a" * 4096,
+        ),
+    ],
+    ids=["url", "base64"],
+)
+def test_token_counter_anthropic_images_match_image_url(
+    source, image_url, nested, use_default
+):
+    def messages(block):
+        content = [block]
+        if nested:
+            content = [
+                {"type": "tool_result", "tool_use_id": "image_1", "content": content}
+            ]
+        return [{"role": "user", "content": content}]
+
+    actual = token_counter_new(
+        model="gpt-4o",
+        messages=messages({"type": "image", "source": source}),
+        use_default_image_token_count=use_default,
+    )
+    expected = token_counter_new(
+        model="gpt-4o",
+        messages=messages({"type": "image_url", "image_url": image_url}),
+        use_default_image_token_count=use_default,
+    )
+    assert actual == expected
+
+
+def test_token_counter_anthropic_file_image_uses_default_estimate():
+    from litellm.constants import DEFAULT_IMAGE_TOKEN_COUNT
+    from litellm.litellm_core_utils.token_counter import _count_content_list
+
+    assert (
+        _count_content_list(
+            len,
+            [{"type": "image", "source": {"type": "file", "file_id": "file_1"}}],
+            False,
+            None,
+        )
+        == DEFAULT_IMAGE_TOKEN_COUNT
+    )
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"type": "tool_reference"},
+        {"type": "image"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png"}},
+        {"type": "image", "source": {"type": "base64", "data": "abcd"}},
+        {"type": "image", "source": {"type": "url"}},
+        {"type": "image", "source": {"type": "file"}},
+        {"type": "image", "source": {"type": "unsupported"}},
+    ],
+)
+def test_token_counter_invalid_anthropic_blocks_preserve_fallback(block):
+    from litellm.litellm_core_utils.token_counter import _count_content_list
+
+    with pytest.raises(ValueError):
+        _count_content_list(len, [block], True, None)
+    assert _count_content_list(len, [block], True, 123) == 123

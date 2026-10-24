@@ -35,6 +35,7 @@ from litellm.litellm_core_utils.url_utils import safe_get
 from litellm.types.llms.anthropic import (
     AnthropicMessagesToolResultParam,
     AnthropicMessagesToolUseParam,
+    ToolReference,
 )
 from litellm.types.llms.openai import (
     AllMessageValues,
@@ -644,6 +645,7 @@ def _validate_anthropic_content(content: Mapping[str, Any]) -> type:
     mapping = {
         "tool_use": AnthropicMessagesToolUseParam,
         "tool_result": AnthropicMessagesToolResultParam,
+        "tool_reference": ToolReference,
     }
 
     expected_cls = mapping.get(content_type)
@@ -659,6 +661,29 @@ def _validate_anthropic_content(content: Mapping[str, Any]) -> type:
         )
 
     return expected_cls
+
+
+def _count_anthropic_image_tokens(
+    content: Mapping[str, Any], use_default_image_token_count: bool
+) -> int:
+    source = content.get("source")
+    if not isinstance(source, Mapping):
+        raise ValueError("Anthropic image requires a source object")
+    source_type = source.get("type")
+    if source_type == "file":
+        if not source.get("file_id"):
+            raise ValueError("Anthropic file image requires file_id")
+        return DEFAULT_IMAGE_TOKEN_COUNT
+    if source_type == "base64":
+        media_type, data = source.get("media_type"), source.get("data")
+        if not media_type or not data:
+            raise ValueError("Anthropic base64 image requires media_type and data")
+        image_url = f"data:{media_type};base64,{data}"
+    elif source_type == "url":
+        image_url = source.get("url")
+    else:
+        raise ValueError(f"Unsupported Anthropic image source type: {source_type}")
+    return _count_image_tokens(image_url, use_default_image_token_count)
 
 
 def _count_anthropic_content(
@@ -731,16 +756,19 @@ def _count_content_list(
                 num_tokens += _count_image_tokens(
                     image_url, use_default_image_token_count
                 )
-            elif c["type"] in ("tool_use", "tool_result"):
+            elif c["type"] == "image":
+                num_tokens += _count_anthropic_image_tokens(
+                    c, use_default_image_token_count
+                )
+            elif c["type"] in ("tool_use", "tool_result", "tool_reference"):
                 num_tokens += _count_anthropic_content(
                     c,
                     count_function,
                     use_default_image_token_count,
                     default_token_count,
                 )
-            elif c["type"] == "thinking":
-                # Claude extended thinking content block
-                # Count the thinking text and skip signature (opaque signature blob)
+            elif c["type"] in ("thinking", "redacted_thinking"):
+                # Count readable thinking text, excluding opaque signatures and redacted data.
                 thinking_text = str(c.get("thinking", ""))
                 if thinking_text:
                     num_tokens += count_function(thinking_text)
@@ -752,7 +780,7 @@ def _count_content_list(
                 )
                 raise ValueError(
                     f"Invalid content item type: {content_type}. "
-                    f"Expected str or dict with 'type' field (text, image_url, tool_use, tool_result, thinking)."
+                    f"Expected str or dict with 'type' field (text, image_url, image, tool_use, tool_result, tool_reference, thinking, redacted_thinking)."
                 )
         return num_tokens
     except Exception as e:
