@@ -13,6 +13,13 @@ import sys
 from pathlib import Path
 import pytest
 
+# Read the bundled cost map instead of the one on GitHub. litellm resolves the
+# remote map at import time, so tests would otherwise assert against whatever
+# upstream last published: capability flags like
+# supports_minimal_reasoning_effort drift there and silently change the result
+# of effort-normalization tests. setdefault so an explicit override wins.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
 sys.path.insert(
     0, os.path.abspath("../..")
 )  # Adds the parent directory to the system path
